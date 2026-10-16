@@ -1,0 +1,34 @@
+[package]
+name = "veloren-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Veloren client library — same modular frontend lib teloren uses
+veloren-client = { git = "https://gitlab.com/veloren/veloren.git", tag = "weekly" }
+veloren-common = { git = "https://gitlab.com/veloren/veloren.git", tag = "weekly", features = ["no-assets"] }
+veloren-common-net = { git = "https://gitlab.com/veloren/veloren.git", tag = "weekly" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# JSON observation output
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Math (re-exported by veloren-client via vek, but handy directly)
+vek = { version = "0.17", features = ["serde"] }
+
+# Specs ECS (used by veloren-common for component access)
+specs = { version = "0.20" }
+
+[profile.dev]
+opt-level = 2
+overflow-checks = false
+
+[[bin]]
+name = "veloren-agent"
+path = "src/main.rs"
