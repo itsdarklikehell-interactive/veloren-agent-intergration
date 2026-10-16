@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bak
+
+# Cargo
+Cargo.lock.old
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# tmux
+.tmux.resurrect
+
+# Agent runtime state
+/veloren-agent-config/

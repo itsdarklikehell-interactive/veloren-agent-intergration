@@ -2,32 +2,16 @@
 
 A coding project integrating agents with the Veloren world.
 
-## Current State
+**Status:** Early development — local server runs, agent frontend written, CI and docs configured.
 
-### What's working
+## What this project does
 
-| Component | Status | Details |
-|---|---|---|
-| Airshipper launcher | Installed | `airshipper` 0.17.0 |
-| Veloren build | Installed | weekly `f97be347` (2026-10-14) |
-| Game client | Present | `veloren-voxygen` (133 MB) |
-| Dedicated server CLI | Present | `veloren-server-cli` (83 MB) |
-| Local server | Running | `veloren-server-cli --non-interactive --no-auth` on port 14004 |
-| teloren (terminal frontend) | Built | `/tmp/teloren-probe/target/debug/teloren` |
-| Raw TCP to server | Working | Python and Rust std can connect to 127.0.0.1:14004 |
+Veloren's engine is deliberately modular: the graphical frontend is entirely decoupled from the client library (`veloren-client`). This project builds a **headless agent frontend** that:
 
-### What's blocked
-
-| Issue | Detail | Workaround |
-|---|---|---|
-| teloren connection | hickory-resolver `lookup_host` fails on `127.0.0.1` even though raw TCP works | Try `no_proxy=*`, or patch teloren to use raw TcpStream |
-| veloren-agent Rust build | `hashbrown`/`shred` use unstable `nightly` features; `veloren-common-base` needs `CARGO_WORKSPACE_DIR` | Requires nightly Rust or extensive crate patching |
-
-## Architecture
-
-Veloren's engine is deliberately modular — the graphical frontend is entirely decoupled from the client library (`veloren-client`). teloren proves this: it's an ANSI terminal frontend using the same `veloren-client` library as the 3D client (`veloren-voxygen`).
-
-**Recommended agent architecture:**
+1. Uses `veloren-client` to connect to a local `veloren-server-cli` instance.
+2. Runs the game tick loop without rendering (no GPU, no display, no Wayland/X11 needed).
+3. Exposes a **stdio/JSON command interface** that Hermes (or any agent harness) can drive: move, chat, command, status, quit.
+4. Emits **JSON-lines observations**: tick, position, health, chat, events.
 
 ```
 ┌─────────────┐     stdio/JSON      ┌──────────────────┐
@@ -43,69 +27,85 @@ Veloren's engine is deliberately modular — the graphical frontend is entirely 
                                     └──────────────────┘
 ```
 
-The agent would:
-1. Use `veloren-client` to connect to the local `veloren-server-cli`
-2. Run the game tick loop headless (no GPU/display needed)
-3. Expose a stdio/JSON command interface for Hermes
-4. Emit JSON-lines observations (position, health, chat, entities)
+## Documentation
 
-## Quick start
-
-### 1. Start the local dedicated server
-
-```bash
-cd ~/Work/veloren-agent-intergration
-./scripts/start-server.sh
-```
-
-This starts `veloren-server-cli --non-interactive --no-auth` in a tmux session named `veloren-server`.
-
-Attach: `tmux attach -t veloren-server`
-Detach: `Ctrl-b d`
-Stop: `tmux kill-session -t veloren-server`
-
-### 2. Verify the server is listening
-
-```bash
-ss -tlnp | grep 14004
-```
-
-### 3. Connect teloren (terminal frontend)
-
-teloren is built at `/tmp/teloren-probe/target/debug/teloren`. It may fail to resolve `127.0.0.1` due to a hickory-resolver issue. Try:
-
-```bash
-# Try with no_proxy
-no_proxy=* /tmp/teloren-probe/target/debug/teloren \
-  --server 127.0.0.1:14004 \
-  --username hermes \
-  --character hermes \
-  --password ''
-```
-
-If DNS resolution fails, raw TCP still works — a Python or custom client can connect directly.
-
-### 4. Build the veloren-agent (Rust headless frontend)
-
-```bash
-cd ~/Work/veloren-agent-intergration
-cargo build --release
-```
-
-**Note:** The Rust build currently fails on stable Rust due to `nightly` feature usage in `hashbrown` and `shred` (transitive dependencies of `veloren-client`). Options:
-- Use nightly Rust (`rustup toolchain install nightly`)
-- Patch `hashbrown`, `shred`, and `foldhash` in the cargo registry
-- Write the agent in Python using the raw TCP connection
-
-## Files
-
-| Path | Purpose |
+| Document | Description |
 |---|---|
-| `Cargo.toml` | Rust project manifest (depends on `veloren-client` from gitlab) |
-| `src/main.rs` | Headless agent frontend (stdin JSON commands, stdout JSON-lines observations) |
-| `README.md` | This file |
-| `scripts/start-server.sh` | Starts `veloren-server-cli` in tmux |
-| `scripts/hermes-bridge.sh` | Thin shell bridge for Hermes to send commands to the agent |
+| [Quick Start](docs/quickstart.md) | Get a local server + agent running in 5 minutes |
+| [Architecture](docs/architecture.md) | System design and data flow |
+| [API Reference](docs/api-reference.md) | JSON commands and observations spec |
+| [Troubleshooting](docs/troubleshooting.md) | Known issues and workarounds |
+| [Contributing](docs/contributing.md) | How to contribute to this project |
+| [Wiki Home](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki) | Project wiki (operations, runbooks, recipes) |
+
+## Quick start (tl;dr)
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/itsdarklikehell/veloren-agent-intergration.git
+cd veloren-agent-intergration
+
+# 2. Start the local dedicated server
+./scripts/start-server.sh
+
+# 3. Build the agent (requires Rust; see build notes below)
+cargo build --release
+
+# 4. Run the agent
+./target/release/veloren-agent --character HERMES
+
+# 5. Send a command (in another terminal)
+echo '{"cmd":"status"}' | ./target/release/veloren-agent --character HERMES
+```
+
+## Prerequisites
+
+| Tool | Purpose | Install check |
+|---|---|---|
+| Rust (`cargo`, `rustc`) | Build the agent | `cargo --version` |
+| Veloren (via Airshipper) | Provides `veloren-server-cli` | `ls ~/.local/share/airshipper/profiles/default/veloren-server-cli` |
+| tmux | Run server in background | `tmux -V` |
+
+## Build status
+
+The Rust agent (`src/main.rs`) compiles against `veloren-client` from the Veloren gitlab `weekly` tag. On the current stable Rust toolchain, the build is blocked on `nightly` feature usage in transitive dependencies (`hashbrown`, `shred`, `foldhash`). Workarounds:
+
+- Use nightly Rust: `rustup toolchain install nightly && cargo +nightly build`
+- Patch the registry crates (see [Troubleshooting](docs/troubleshooting.md))
+- Write the agent in Python using the raw TCP connection (TCP to `127.0.0.1:14004` works fine)
+
+The shell scripts (`scripts/`) are CI-validated with shellcheck and shfmt.
+
+## CI
+
+GitHub Actions CI runs on every push and pull request to `main`, using the shared
+[itsdarklikehell/ci-templates](https://github.com/itsdarklikehell/ci-templates)
+`ci-shell.yml` reusable workflow. It validates all `*.sh` files with shellcheck and shfmt.
+
+See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+## Repository structure
+
+```
+veloren-agent-intergration/
+├── .github/workflows/ci.yml        # GitHub Actions CI (reusable template)
+├── Cargo.toml                      # Rust project manifest
+├── Cargo.lock                      # Locked dependencies
+├── README.md                       # This file
+├── docs/
+│   ├── quickstart.md               # Step-by-step getting started
+│   ├── architecture.md             # System design + data flow
+│   ├── api-reference.md            # JSON command/observation spec
+│   ├── troubleshooting.md          # Known issues + fixes
+│   └── contributing.md             # Contributor guide
+├── scripts/
+│   ├── start-server.sh             # Start veloren-server-cli in tmux
+│   ├── stop-server.sh              # Stop the local server
+│   ├── connect-teloren.sh          # Connect teloren terminal frontend
+│   └── hermes-bridge.sh            # stdio JSON bridge for Hermes
+└── src/
+    └── main.rs                     # Headless agent frontend
+```
 
 ## teloren controls (when connected)
 
@@ -119,13 +119,6 @@ cargo build --release
 | r | Respawn |
 | return | Open chat |
 | q | Quit |
-
-## Next steps
-
-1. Fix teloren's hickory-resolver connection issue (try `no_proxy=*` or patch to use raw `TcpStream::connect`)
-2. Resolve the Rust nightly feature build issues (or write the agent in Python)
-3. Create the Hermes↔agent bridge (stdio JSON or TCP)
-4. Add automated tests for server start/stop and agent connect/disconnect
 
 ## Repository
 
