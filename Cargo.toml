@@ -24,6 +24,7 @@ vek = { version = "0.17", features = ["serde"] }
 
 # Specs ECS (used by veloren-common for component access)
 specs = { version = "0.20" }
+shred = "0.15"
 
 [profile.dev]
 opt-level = 2

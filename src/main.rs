@@ -26,9 +26,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use specs::WorldExt;
 use tokio::runtime::Runtime;
 use veloren_client::{
-    Client, ClientInitStage, ClientType, CredentialProvider, Credentials,
+    Client, ClientType, CredentialProvider, Credentials,
     addr::ConnectionArgs,
 };
 use veloren_common::{
@@ -134,18 +135,13 @@ fn main() {
         username: args.character.clone(),
     };
 
-    let mut mismatched_info: Option<veloren_common_net::msg::ServerInfo> = None;
     let mut client = runtime
         .block_on(Client::new(
             addr,
             Arc::clone(&runtime),
             None, // locale
             &provider,
-            &|stage| {
-                if let ClientInitStage::ServerVersionArrived(ref info) = stage {
-                    mismatched_info = Some(info.clone());
-                }
-            },
+            &|_stage| {}, // version mismatch callback (unused)
             |_| {}, // add_foreign_systems
             PathBuf::from("/tmp/veloren-agent-config"),
             ClientType::Game,
@@ -221,10 +217,10 @@ fn main() {
         }
 
         // --- Tick the client ---------------------------------------------
-        let events = match client.tick(inputs, clock.dt()) {
+        let events = match client.tick(inputs, clock.real_dt()) {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("Client tick error: {e}");
+                eprintln!("Client tick error: {e:?}");
                 break;
             }
         };
@@ -291,12 +287,12 @@ fn ensure_character(client: &mut Client, character_name: &str) {
     client.load_character_list();
 
     // Tick until the character list arrives or we time out.
-    let mut clock = Clock::new(Duration::from_secs_f64(1.0 / TICKS_PER_SEC));
+    let clock = Clock::new(Duration::from_secs_f64(1.0 / TICKS_PER_SEC));
     let mut waited = 0.0;
     while client.character_list().characters.is_empty() && client.character_list().loading {
-        let _ = client.tick(ControllerInputs::default(), clock.dt());
+        let _ = client.tick(ControllerInputs::default(), clock.real_dt());
         client.cleanup();
-        waited += clock.dt().as_secs_f64();
+        waited += clock.real_dt().as_secs_f64();
         if waited > 10.0 {
             eprintln!("Timed out waiting for character list");
             break;
@@ -343,9 +339,9 @@ fn ensure_character(client: &mut Client, character_name: &str) {
             // Wait for character list to update
             let mut waited = 0.0;
             while client.character_list().loading {
-                let _ = client.tick(ControllerInputs::default(), clock.dt());
+                let _ = client.tick(ControllerInputs::default(), clock.real_dt());
                 client.cleanup();
-                waited += clock.dt().as_secs_f64();
+                waited += clock.real_dt().as_secs_f64();
                 if waited > 10.0 {
                     eprintln!("Timed out waiting for character creation");
                     return;
@@ -371,9 +367,9 @@ fn ensure_character(client: &mut Client, character_name: &str) {
     // Tick until we're in-game (presence becomes Some(Character(_)))
     let mut waited = 0.0;
     while client.presence().is_none() && waited < 15.0 {
-        let _ = client.tick(ControllerInputs::default(), clock.dt());
+        let _ = client.tick(ControllerInputs::default(), clock.real_dt());
         client.cleanup();
-        waited += clock.dt().as_secs_f64();
+        waited += clock.real_dt().as_secs_f64();
     }
 
     match client.presence() {
