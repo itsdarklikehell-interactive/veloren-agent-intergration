@@ -24,26 +24,34 @@ docker compose up --build
 
 ## Before the first run
 
-1. Copy the example env file and fill in your values:
+1. Copy the example env file:
 
    ```bash
    cp .env.example .env
    ```
 
-   Set at least:
-   - `VELOREN_USERNAME` / `VELOREN_PASSWORD` — Veloren account credentials used by the agent (read from `.env` via `env_file`).
-   - `VELOREN_ASSETS` — path to the Airshipper assets directory on the host (mounted into the agent container).
-   - `DASHBOARD_API_KEY` — API key required on every dashboard API endpoint except `GET /` and `GET /api/health`. Generate one with:
+2. Fill in `.env` (it is gitignored — never commit it):
 
-     ```bash
-     python3 -c "import secrets; print(secrets.token_urlsafe(24))"
-     ```
+   | Variable | Required | Example |
+   |---|---|---|
+   | `VELOREN_USERNAME` | Yes | `hermes` |
+   | `VELOREN_PASSWORD` | Yes (authenticated servers) | `...` |
+   | `VELOREN_ASSETS` | Recommended | `/home/rizzo/.local/share/airshipper/profiles/default/assets` |
+   | `DASHBOARD_API_KEY` | Recommended | `python3 -c "import secrets; print(secrets.token_urlsafe(24))"` |
+   | `VELOREN_PORT` | No | `14004` |
+   | `VELOREN_AGENT_CHARACTER` | No | `hermes` |
+   | `VELOREN_DASHBOARD_HOST` | No | `0.0.0.0` |
+   | `VELOREN_DASHBOARD_PORT` | No | `5000` |
+   | `DASHBOARD_VERSION` | No | `2.0.0-m2` |
 
-   If `DASHBOARD_API_KEY` is unset, the dashboard generates a random key at startup (it is never logged or embedded in HTML). Set `DASHBOARD_API_KEY` in `.env` for stable, operator-chosen access; clients supply it per request via the `X-API-Key` header (the dashboard UI reads it from `localStorage`, never from the page source).
+   If `DASHBOARD_API_KEY` is unset, the dashboard generates a random key at
+   startup (it is never logged or embedded in HTML). Set `DASHBOARD_API_KEY`
+   in `.env` for stable, operator-chosen access; clients supply it per request
+   via the `X-API-Key` header. Every API endpoint except `GET /`,
+   `GET /api/health`, `GET /metrics`, and the two `/api/viewport/*` endpoints
+   requires it.
 
-   `.env` is gitignored — never commit it.
-
-2. Make sure Docker and Docker Compose v2 are installed and the daemon is running:
+3. Make sure Docker and Docker Compose v2 are installed and the daemon is running:
 
    ```bash
    docker --version && docker compose version
@@ -122,3 +130,76 @@ gitlab source (`Dockerfile.server`). To use the Airshipper-provided
 with an image containing that binary, or mount the Airshipper profiles
 directory (`VELOREN_SERVER_BIN`) and override the entrypoint to run
 `veloren-server-cli --non-interactive`.
+
+## Verify the deployment
+
+```bash
+# 1. All containers created and healthy
+docker compose ps
+
+# 2. Game server port accepting connections (from the host)
+ss -tlnp | grep 14004
+
+# 3. Public dashboard endpoints
+curl -s http://localhost:5000/api/health                                # uptime, version, last tick
+curl -s http://localhost:5000/api/viewport/latest                       # latest observation
+curl -s "http://localhost:5000/api/viewport/trail?limit=50"           # position trail
+
+# 4. Authenticated API (requires DASHBOARD_API_KEY)
+curl -s -H "X-API-Key: $DASHBOARD_API_KEY" http://localhost:5000/api/status
+```
+
+## Manage the stack
+
+| Goal | Command |
+|---|---|
+| Stream logs (all services) | `docker compose logs -f` |
+| Logs of one service | `docker compose logs -f veloren-agent` |
+| Restart one service | `docker compose restart veloren-dashboard` |
+| Rebuild and restart | `docker compose up --build` |
+| Stop and remove containers | `docker compose down` |
+| Stop and remove named volumes (world data + dashboard DB) | `docker compose down -v` |
+
+## Environment variable reference
+
+`veloren-agent` receives `VELOREN_USERNAME`, `VELOREN_PASSWORD`,
+`VELOREN_ASSETS`, `VELOREN_PORT`, and `VELOREN_AGENT_CHARACTER` from `.env`
+(via `env_file` / `environment`). `veloren-dashboard` receives
+`DASHBOARD_API_KEY`, `VELOREN_DASHBOARD_HOST`, `VELOREN_DASHBOARD_PORT`, and
+`DASHBOARD_VERSION` the same way. None of these are hardcoded in the Compose
+file or the images.
+
+## Volumes and persistence
+
+| Volume | Mounted at | Contents |
+|---|---|---|
+| `veloren-server-data` | `/var/lib/veloren/server` | Veloren world data |
+| `dashboard-data` | `/app/.hermes/artifacts` | SQLite dashboard DB, observations, agent logs |
+
+`docker compose down` preserves both volumes. `docker compose down -v`
+removes them (world resets, observation and trail history lost).
+
+## Production notes
+
+- The dashboard image runs Flask's development server (`python3 web/app.py`).
+  For anything beyond local testing, run behind a TLS reverse proxy (nginx,
+  Caddy, …). Bind to `0.0.0.0` only when a proxy or firewall sits in front;
+  the local default is `127.0.0.1`. Agent start/stop state lives in dashboard
+  memory, so it is per-worker under gunicorn — use `--workers 1` if the
+  dashboard drives the agent lifecycle.
+- Both viewport endpoints (`/api/viewport/latest`, `/api/viewport/trail`) are
+  public by design so overlays can consume them; do not expose the dashboard
+  to the open internet without TLS and access control.
+
+## Troubleshooting (quick reference)
+
+| Symptom | First step |
+|---|---|
+| `veloren-server` unhealthy / not listening | `docker compose logs veloren-server` — world generation can take several minutes |
+| Agent cannot reach the server | Confirm both services are on `veloren-net`; the agent must connect to `veloren-server:14004`, not `127.0.0.1` |
+| Dashboard API returns 401 | Set/send `DASHBOARD_API_KEY` as `X-API-Key` |
+| `GET /api/viewport/latest` → `{"ok":false,"error":"no observations yet"}` | The agent has not emitted an observation yet — start the agent and wait for it to enter the world |
+| Port 14004 or 5000 already in use | Stop the conflicting process or change the host port mapping in `docker-compose.yml` |
+
+For local (non-Docker) issues and the full agent-connection troubleshooting
+section, see [docs/troubleshooting.md](troubleshooting.md).
