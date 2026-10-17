@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veloren Agent Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="shell">
+  <header class="bar">
+    <h1>Veloren Agent <span class="muted">Integration Dashboard</span></h1>
+    <div class="chips" id="chips">
+      <span class="chip" id="chip-server">server: &hellip;</span>
+      <span class="chip" id="chip-port">port 14004: &hellip;</span>
+      <span class="chip" id="chip-agent">agent: &hellip;</span>
+      <span class="chip" id="chip-registered">registered: &hellip;</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <a class="tab active" href="#status">Status</a>
+    <a class="tab" href="#control">Control Panel</a>
+    <a class="tab" href="#server-logs">Server Logs</a>
+    <a class="tab" href="#agent-logs">Agent Logs</a>
+  </nav>
+
+  <main class="wrap">
+    <!-- Status -->
+    <section class="panel" id="status">
+      <h2>Status</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Veloren Server (tmux)</h3>
+          <p id="stat-server">session <b>veloren-server</b>: <span id="stat-server-val">checking&hellip;</span></p>
+          <p id="stat-port">port <b id="stat-port-num">14004</b>: <span id="stat-port-val">checking&hellip;</span></p>
+        </div>
+        <div class="card">
+          <h3>Headless Agent</h3>
+          <p id="stat-agent">process: <span id="stat-agent-val">checking&hellip;</span></p>
+          <p id="stat-registered">registered: <span id="stat-registered-val">checking&hellip;</span></p>
+        </div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1">
+        <h3>Last Observation</h3>
+        <pre id="stat-obs" class="obs-pre">no observations yet &mdash; start the agent and poll for JSON-lines observations.</pre>
+      </div>
+    </section>
+
+    <!-- Control Panel -->
+    <section class="panel" id="control">
+      <h2>Control Panel</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Server</h3>
+          <div class="toolbar">
+            <button class="btn" id="btn-server-start">Start server (tmux)</button>
+            <button class="btn btn-danger" id="btn-server-stop">Stop server</button>
+          </div>
+          <p class="hint">Runs <code>scripts/start-server.sh</code> &rarr; tmux session <code>veloren-server</code> on port 14004.</p>
+          <div id="msg-server" class="msg"></div>
+        </div>
+        <div class="card">
+          <h3>Agent</h3>
+          <div class="toolbar">
+            <button class="btn" id="btn-agent-start">Start agent</button>
+            <button class="btn btn-danger" id="btn-agent-stop">Stop agent</button>
+          </div>
+          <p class="hint">Long-lived <code>veloren-agent --character hermes</code> process; stdin pipe for commands, stdout logged.</p>
+          <div id="msg-agent" class="msg"></div>
+        </div>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1">
+        <h3>Send Command to Agent (stdin)</h3>
+        <div class="row">
+          <select id="cmd-template">
+            <option value="{&quot;cmd&quot;:&quot;status&quot;}">status</option>
+            <option value="{&quot;cmd&quot;:&quot;move&quot;,&quot;x&quot;:1.0,&quot;y&quot;:0.0}">move forward</option>
+            <option value="{&quot;cmd&quot;:&quot;move&quot;,&quot;x&quot;:-1.0,&quot;y&quot;:0.0}">move back</option>
+            <option value="{&quot;cmd&quot;:&quot;move&quot;,&quot;x&quot;:0.0,&quot;y&quot;:1.0}">move left</option>
+            <option value="{&quot;cmd&quot;:&quot;move&quot;,&quot;x&quot;:0.0,&quot;y&quot;:-1.0}">move right</option>
+            <option value="{&quot;cmd&quot;:&quot;chat&quot;,&quot;msg&quot;:&quot;hello from dashboard&quot;}">chat</option>
+            <option value="{&quot;cmd&quot;:&quot;quit&quot;}">quit</option>
+            <option value="custom">custom &hellip;</option>
+          </select>
+          <textarea id="cmd-body" rows="3" placeholder="Paste a JSON command, e.g. {"cmd":"status"}">{&quot;cmd&quot;:&quot;status&quot;}</textarea>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="btn-send">Send command</button>
+        </div>
+        <div id="msg-cmd" class="msg"></div>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1">
+        <h3>Live Observations (JSON-lines)</h3>
+        <div id="obs-list" class="obs-list">waiting for observations&hellip;</div>
+      </div>
+    </section>
+
+    <!-- Server Logs -->
+    <section class="panel" id="server-logs">
+      <h2>Server Logs <span class="muted">(tmux capture-pane &mdash; session <code>veloren-server</code>)</span></h2>
+      <div class="card log-card" style="grid-column: 1 / -1">
+        <pre id="log-server" class="log-pre">waiting for server log data&hellip;</pre>
+      </div>
+    </section>
+
+    <!-- Agent Logs -->
+    <section class="panel" id="agent-logs">
+      <h2>Agent Logs <span class="muted">(stdout/stderr of the veloren-agent process)</span></h2>
+      <div class="card log-card" style="grid-column: 1 / -1">
+        <pre id="log-agent" class="log-pre">waiting for agent log data&hellip;</pre>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bar">
+    <span class="muted">Veloren Agent Integration &middot; web/ dashboard &middot; polling, no WebSockets</span>
+  </footer>
+</div>
+
+<script>window.DASHBOARD_API_KEY = {{ api_key|tojson }};</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

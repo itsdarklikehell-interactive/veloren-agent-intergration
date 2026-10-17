@@ -21,6 +21,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install nightly Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
+      - name: Cache cargo registry and git checkouts
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo
+          key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-nightly-
+      - name: Cargo build target cache
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: cargo-build-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-build-${{ runner.os }}-nightly-
       - name: Fetch dependencies
         run: cargo fetch
       - name: Patch transitive deps for modern toolchains
@@ -45,7 +57,12 @@ jobs:
             echo "::error::shred-0.15.0/src/meta.rs not found in cargo registry" >&2
             exit 1
           fi
-          sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as *mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' "$SHRED_META"
+          sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as \*mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' "$SHRED_META"
+          # Gate: fail the job if the shred patch did not apply (e.g. upstream source changed)
+          if grep -q 'core::ptr::invalid_mut' "$SHRED_META"; then
+            echo "::error::shred-0.15.0 toolchain patch did not apply: invalid_mut still present" >&2
+            exit 1
+          fi
       - name: Build with zero warnings (nightly)
         run: RUSTFLAGS="-D warnings" cargo +nightly build --release
       - name: Run test suite (nightly)

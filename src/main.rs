@@ -9,12 +9,15 @@
 //!   {"cmd":"chat","msg":"hello"}        send world chat
 //!   {"cmd":"command","name":"say","args":["hi"]}  send a server command
 //!   {"cmd":"status"}                    request a status observation
+//!   {"cmd":"patrol","waypoints":[[x,y],[x,y]]}  patrol waypoints (loops back to start)
 //!   {"cmd":"quit"}                      disconnect and exit
 //!
 //! Observations (one JSON object per line on stdout):
-//!   {"tick":0,"registered":true,"presence":"Character","position":[x,y,z],
+//!   {"schema_version":1,"tick":0,"registered":true,"presence":"Character","position":[x,y,z],
 //!    "health":{"current":100.0,"maximum":100.0,"is_dead":false},
 //!    "chat":["..."],"events":["..."]}
+//!
+//!   schema_version — observation schema version; see SCHEMA_VERSION.
 
 #![deny(unsafe_code)]
 
@@ -43,6 +46,24 @@ use vek::Vec2;
 const DEFAULT_SERVER: &str = "127.0.0.1:14004";
 const DEFAULT_CHARACTER: &str = "hermes";
 const TICKS_PER_SEC: f64 = 60.0;
+
+/// Observation schema version, emitted as `schema_version` in every JSON observation.
+/// Bump this on any breaking change to the observation shape.
+const SCHEMA_VERSION: u32 = 1;
+
+/// Kanban task the A2A bridge posts tick/status comments to.
+/// Override with the HERMES_KANBAN_TASK_ID environment variable.
+const DEFAULT_KANBAN_TASK_ID: &str = "1cd858da-57c2-40af-9351-ede69e912324";
+
+/// Ticks between kanban heartbeat comments (60 ticks/sec; default 300 = every 5s).
+/// Override with HERMES_KANBAN_INTERVAL_TICKS.
+const DEFAULT_A2A_INTERVAL_TICKS: u64 = 300;
+
+/// World-unit distance at which a patrol waypoint counts as reached.
+const PATROL_REACH_THRESHOLD: f32 = 0.5;
+
+/// Ticks between automatic chat replies (prevents reply loops/spam).
+const AUTO_RESPONSE_COOLDOWN_TICKS: u64 = 300;
 
 /// CLI arguments.
 #[derive(Parser, Debug)]
@@ -77,6 +98,9 @@ enum AgentCommand {
     #[serde(rename = "status")]
     Status,
 
+    #[serde(rename = "patrol")]
+    Patrol { waypoints: Vec<[f32; 2]> },
+
     #[serde(rename = "quit")]
     Quit,
 }
@@ -92,6 +116,7 @@ struct HealthObs {
 /// JSON observation to Hermes (stdout).
 #[derive(Serialize, Debug)]
 struct Observation {
+    schema_version: u32,
     tick: u64,
     registered: bool,
     presence: Option<String>,
@@ -168,12 +193,40 @@ fn main() {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
-    // Pending movement direction (set by commands, applied each tick)
+    // Pending movement direction (set by commands or patrol AI, applied each tick)
     let mut move_dir = Vec2::zero();
     let mut pending_chat: Option<String> = None;
+    let mut last_sent_chat: Option<String> = None;
     let mut pending_command: Option<(String, Vec<String>)> = None;
 
     let mut chat_buffer: Vec<String> = Vec::new();
+
+    // Last known world position [x, y, z], refreshed after each observation.
+    let mut last_position: Option<[f32; 3]> = None;
+
+    // Patrol state: {"cmd":"patrol","waypoints":[[x,y],...]} steers the agent
+    // toward each waypoint in order, looping back to the start.
+    let mut patrol_waypoints: Vec<[f32; 2]> = Vec::new();
+    let mut patrol_index: usize = 0;
+    let mut patrol_active: bool = false;
+
+    // Cooldown (ticks) between automatic chat replies; prevents reply loops.
+    let mut auto_response_cooldown: u64 = 0;
+
+    // A2A bridge: periodically posts tick/status to Hermes Kanban via
+    // `hermes kanban comment <task_id> <report>`. Non-blocking (spawned thread).
+    let kanban_task_id =
+        env::var("HERMES_KANBAN_TASK_ID").unwrap_or_else(|_| DEFAULT_KANBAN_TASK_ID.to_string());
+    let a2a_interval: u64 = env
+        ::var("HERMES_KANBAN_INTERVAL_TICKS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_A2A_INTERVAL_TICKS)
+        .max(1);
+    let a2a_enabled = env::var("HERMES_KANBAN_ENABLE")
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true);
+    let mut ticks_since_heartbeat: u64 = 0;
 
     // Non-blocking command channel: a reader thread blocks on stdin so the
     // main tick loop can drain available commands without ever stalling.
@@ -191,6 +244,31 @@ fn main() {
 
     'running: loop {
         clock.tick();
+        auto_response_cooldown = auto_response_cooldown.saturating_sub(1);
+        ticks_since_heartbeat = ticks_since_heartbeat.saturating_add(1);
+
+        // Movement resets every tick. Patrol sets a base steering direction
+        // below; an explicit {"cmd":"move"} command overrides it when commands drain.
+        move_dir = Vec2::zero();
+
+        // --- Patrol steering: walk toward the current waypoint ----------
+        if patrol_active && patrol_index < patrol_waypoints.len() {
+            if let Some(pos) = last_position {
+                let target = Vec2::new(patrol_waypoints[patrol_index][0], patrol_waypoints[patrol_index][1]);
+                let cur = Vec2::new(pos[0], pos[1]);
+                let to_target = target - cur;
+                let dist = to_target.length();
+                if dist < PATROL_REACH_THRESHOLD {
+                    patrol_index = (patrol_index + 1) % patrol_waypoints.len();
+                    eprintln!(
+                        "Patrol reached waypoint {}, heading to {}",
+                        patrol_index, patrol_waypoints[patrol_index]
+                    );
+                } else if dist > 0.001 {
+                    move_dir = to_target.normalize();
+                }
+            }
+        }
 
         // --- Drain pending stdin commands (non-blocking) ------------------
         for line in cmd_rx.try_iter() {
@@ -216,6 +294,21 @@ fn main() {
                                 client.logout();
                                 break 'running;
                             }
+                            AgentCommand::Patrol { waypoints } => {
+                                if waypoints.is_empty() {
+                                    patrol_active = false;
+                                    patrol_index = 0;
+                                    eprintln!("Patrol stopped");
+                                } else {
+                                    patrol_waypoints = waypoints;
+                                    patrol_index = 0;
+                                    patrol_active = true;
+                                    eprintln!(
+                                        "Patrol started with {} waypoints",
+                                        patrol_waypoints.len()
+                                    );
+                                }
+                            }
                         },
                         Err(e) => {
                             eprintln!("Failed to parse command: {e}");
@@ -228,6 +321,7 @@ fn main() {
         inputs.move_dir = move_dir;
 
         if let Some(msg) = pending_chat.take() {
+            last_sent_chat = Some(msg.clone());
             client.send_chat(msg);
         }
         if let Some((name, args)) = pending_command.take() {
@@ -253,9 +347,27 @@ fn main() {
                         .as_plain()
                         .unwrap_or_default()
                         .to_string();
-                    chat_buffer.push(content);
+                    chat_buffer.push(content.clone());
                     if chat_buffer.len() > 50 {
                         chat_buffer.remove(0);
+                    }
+                    // --- Event-driven auto-response --------------------
+                    // Auto-reply once per cooldown when a player addresses the
+                    // agent (by name or keyword), never echoing our own text.
+                    let lowered = content.to_lowercase();
+                    let is_ours = last_sent_chat.as_ref() == Some(&content);
+                    let triggered = !is_ours
+                        && !content.starts_with("Auto-response:")
+                        && auto_response_cooldown == 0
+                        && (lowered.contains("hermes")
+                            || lowered.contains("ping")
+                            || lowered.contains("hello")
+                            || lowered.contains("hi"));
+                    if triggered {
+                        let reply = format!("Auto-response: I heard \"{content}\"");
+                        last_sent_chat = Some(reply.clone());
+                        pending_chat = Some(reply);
+                        auto_response_cooldown = AUTO_RESPONSE_COOLDOWN_TICKS;
                     }
                 }
                 other => {
@@ -271,6 +383,7 @@ fn main() {
             .read_storage::<comp::Pos>()
             .get(client.entity())
             .map(|p| [p.0.x, p.0.y, p.0.z]);
+        last_position = position;
 
         // Health
         let health = client.current::<comp::Health>().map(|h| HealthObs {
@@ -280,6 +393,7 @@ fn main() {
         });
 
         let obs = Observation {
+            schema_version: SCHEMA_VERSION,
             tick: client.get_tick(),
             registered: client.registered(),
             presence: format!("{:?}", client.presence()).into(),
@@ -292,6 +406,30 @@ fn main() {
         let line = serde_json::to_string(&obs).unwrap();
         writeln!(out, "{line}").unwrap();
         out.flush().unwrap();
+
+        // --- A2A bridge: periodic tick/status kanban heartbeat ----------
+        if a2a_enabled && ticks_since_heartbeat >= a2a_interval {
+            ticks_since_heartbeat = 0;
+            let task_id = kanban_task_id.clone();
+            let report = format!(
+                "tick={} registered={} presence={:?} position={:?} health={:?}",
+                obs.tick, obs.registered, obs.presence, obs.position, obs.health
+            );
+            std::thread::spawn(move || {
+                match std::process::Command::new("hermes")
+                    .args(["kanban", "comment", &task_id, &report])
+                    .output()
+                {
+                    Ok(out) if out.status.success() => {}
+                    Ok(out) => eprintln!(
+                        "kanban heartbeat comment failed (exit {:?}): {}",
+                        out.status.code(),
+                        String::from_utf8_lossy(&out.stderr)
+                    ),
+                    Err(e) => eprintln!("kanban heartbeat comment spawn failed: {e}"),
+                }
+            });
+        }
 
         client.cleanup();
     }

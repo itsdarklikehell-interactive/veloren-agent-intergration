@@ -2949,14 +2949,14 @@ dependencies = [
  "tokio",
  "vek",
  "veloren-client",
- "veloren-common",
- "veloren-common-net",
+ "veloren-common 0.18.0 (git+https://gitlab.com/veloren/veloren.git?tag=weekly)",
+ "veloren-common-net 0.18.0 (git+https://gitlab.com/veloren/veloren.git?tag=weekly)",
 ]
 
 [[package]]
 name = "veloren-client"
 version = "0.18.0"
-source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "authc",
  "byteorder",
@@ -2971,10 +2971,10 @@ dependencies = [
  "tokio",
  "tracing",
  "vek",
- "veloren-common",
- "veloren-common-base",
- "veloren-common-i18n",
- "veloren-common-net",
+ "veloren-common 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-base 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-i18n 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-net 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
  "veloren-common-state",
  "veloren-common-systems",
  "veloren-network",
@@ -3021,15 +3021,76 @@ dependencies = [
  "tracing",
  "uuid",
  "vek",
- "veloren-common-assets",
- "veloren-common-base",
- "veloren-common-i18n",
+ "veloren-common-assets 0.18.0 (git+https://gitlab.com/veloren/veloren.git?tag=weekly)",
+ "veloren-common-base 0.18.0 (git+https://gitlab.com/veloren/veloren.git?tag=weekly)",
+ "veloren-common-i18n 0.18.0 (git+https://gitlab.com/veloren/veloren.git?tag=weekly)",
+]
+
+[[package]]
+name = "veloren-common"
+version = "0.18.0"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+dependencies = [
+ "ahash 0.8.12",
+ "approx",
+ "bitflags",
+ "chrono",
+ "chrono-tz",
+ "crossbeam-utils",
+ "dot_vox",
+ "enum-map",
+ "enumset",
+ "fxhash",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "inline_tweak",
+ "itertools",
+ "lazy_static",
+ "num-derive",
+ "num-traits",
+ "ordered-float",
+ "rand 0.10.3",
+ "rayon",
+ "regex",
+ "ron",
+ "roots",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "sha2",
+ "slab",
+ "slotmap",
+ "specs",
+ "spin_sleep",
+ "strum",
+ "thread-priority",
+ "tracing",
+ "uuid",
+ "vek",
+ "veloren-common-assets 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-base 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-i18n 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
 ]
 
 [[package]]
 name = "veloren-common-assets"
 version = "0.18.0"
 source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+dependencies = [
+ "assets_manager",
+ "dot_vox",
+ "hashbrown 0.17.1",
+ "image",
+ "lazy_static",
+ "ron",
+ "tracing",
+ "wavefront",
+]
+
+[[package]]
+name = "veloren-common-assets"
+version = "0.18.0"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "assets_manager",
  "dot_vox",
@@ -3051,19 +3112,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "veloren-common-base"
+version = "0.18.0"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+dependencies = [
+ "directories-next",
+ "tracing",
+]
+
+[[package]]
 name = "veloren-common-ecs"
 version = "0.18.0"
-source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "specs",
  "tracing",
- "veloren-common-base",
+ "veloren-common-base 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
 ]
 
 [[package]]
 name = "veloren-common-i18n"
 version = "0.18.0"
 source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+dependencies = [
+ "hashbrown 0.17.1",
+ "rand 0.10.3",
+ "serde",
+]
+
+[[package]]
+name = "veloren-common-i18n"
+version = "0.18.0"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "hashbrown 0.17.1",
  "rand 0.10.3",
@@ -3085,13 +3165,31 @@ dependencies = [
  "sum_type",
  "tracing",
  "vek",
- "veloren-common",
+ "veloren-common 0.18.0 (git+https://gitlab.com/veloren/veloren.git?tag=weekly)",
+]
+
+[[package]]
+name = "veloren-common-net"
+version = "0.18.0"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+dependencies = [
+ "bincode",
+ "flate2",
+ "hashbrown 0.17.1",
+ "image",
+ "num-traits",
+ "serde",
+ "specs",
+ "sum_type",
+ "tracing",
+ "vek",
+ "veloren-common 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
 ]
 
 [[package]]
 name = "veloren-common-state"
 version = "0.18.0"
-source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "async-trait",
  "futures",
@@ -3104,16 +3202,16 @@ dependencies = [
  "timer-queue",
  "tracing",
  "vek",
- "veloren-common",
- "veloren-common-base",
+ "veloren-common 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-base 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
  "veloren-common-ecs",
- "veloren-common-net",
+ "veloren-common-net 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
 ]
 
 [[package]]
 name = "veloren-common-systems"
 version = "0.18.0"
-source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "itertools",
  "ordered-float",
@@ -3122,16 +3220,16 @@ dependencies = [
  "specs",
  "tracing",
  "vek",
- "veloren-common",
- "veloren-common-base",
+ "veloren-common 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
+ "veloren-common-base 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
  "veloren-common-ecs",
- "veloren-common-net",
+ "veloren-common-net 0.18.0 (git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486)",
 ]
 
 [[package]]
 name = "veloren-network"
 version = "0.3.0"
-source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -3156,7 +3254,7 @@ dependencies = [
 [[package]]
 name = "veloren-network-protocol"
 version = "0.6.1"
-source = "git+https://gitlab.com/veloren/veloren.git?tag=weekly#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
+source = "git+https://gitlab.com/veloren/veloren.git?rev=f97be347c5a7b2b4674c47aa29ff9cc63a85e486#f97be347c5a7b2b4674c47aa29ff9cc63a85e486"
 dependencies = [
  "async-trait",
  "bitflags",

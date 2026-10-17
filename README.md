@@ -94,6 +94,110 @@ cargo build --release
 echo '{"cmd":"status"}' | ./target/release/veloren-agent --character HERMES
 ```
 
+
+## Web Dashboard
+
+A self-contained Flask dashboard for operating and observing the agent and
+server lives under `web/`. It polls JSON endpoints (no WebSockets) and renders
+a vanilla HTML/JS interface:
+
+- **Status** — tmux session `veloren-server`, port 14004 listener, agent process, registration status
+- **Server logs** — `tmux capture-pane` output of the `veloren-server` session
+- **Agent logs** — raw stdout/stderr of the headless `veloren-agent` process
+- **Control panel** — start/stop the server and agent, send JSON commands
+  (move, chat, command, status, quit) to the agent's stdin, watch live JSON-lines observations
+
+### Run
+
+```bash
+cd /home/rizzo/Work/veloren-agent-intergration/web
+python3 -m pip install -r requirements.txt   # flask, python-dotenv
+python3 app.py                               # http://127.0.0.1:5000
+```
+
+### Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/` | GET | Dashboard page (public, no auth) |
+| `/api/health` | GET | Uptime, version, last observation tick (public, no auth) |
+| `/api/status` | GET | tmux session, port 14004, agent running, registered status |
+| `/api/server-logs` | GET | Tmux capture-pane tail of `veloren-server` |
+| `/api/agent-logs` | GET | Raw agent stdout/stderr tail |
+| `/api/observations` | GET | Parsed JSON-lines observations from the agent |
+| `/api/server/start` | POST | Start `veloren-server-cli` in tmux (`scripts/start-server.sh`) |
+| `/api/server/stop` | POST | Kill the tmux session |
+| `/api/agent/start` | POST | Start `veloren-agent` with a stdin pipe |
+| `/api/agent/stop` | POST | Send `quit` and stop the agent process |
+| `/api/agent/command` | POST | Send one JSON command to the agent's stdin |
+
+### Authentication
+
+Every endpoint except `GET /` and `GET /api/health` requires the dashboard API
+key. The key is read from `DASHBOARD_API_KEY` (`.env` or environment); if unset,
+a random key is generated at startup and printed to stdout. Send it with any of:
+
+```bash
+curl -H "X-API-Key: <key>" http://127.0.0.1:5000/api/status
+curl -H "Authorization: Bearer <key>" http://127.0.0.1:5000/api/observations
+curl -u "user:<key>" http://127.0.0.1:5000/api/health   # Basic auth also accepted
+```
+
+`GET /api/health` is intentionally unauthenticated so load balancers and
+monitoring can poll it. The dashboard page embeds the key so the browser UI can
+poll the API; bind to `127.0.0.1` (the default) or put a TLS reverse proxy in
+front for network-facing deployments.
+
+Credentials (`VELOREN_USERNAME`/`VELOREN_PASSWORD`) are read from `.env` and
+forwarded to the agent process; they are never exposed by the dashboard.
+
+### Production (gunicorn)
+
+For anything beyond local testing, run the dashboard under [gunicorn](https://gunicorn.org)
+instead of Flask's dev server:
+
+```bash
+# 1. Install gunicorn
+python3 -m pip install gunicorn
+
+# 2. Configure the dashboard (copy .env.example to .env and fill in values)
+cp .env.example .env
+# set at least: DASHBOARD_API_KEY (required on all API endpoints except / and /api/health)
+
+# 3. Run (from the repo root)
+cd /home/rizzo/Work/veloren-agent-intergration
+set -a; . .env; set +a
+gunicorn --chdir web --bind 0.0.0.0:5000 --workers 2 --threads 4 --timeout 30 \
+  --access-logfile - --error-logfile - app:app
+```
+
+Notes:
+
+- **Bind address** — the dashboard defaults to `127.0.0.1:5000`; the gunicorn example above binds `0.0.0.0:5000` for container/proxy deployments. Override with `VELOREN_DASHBOARD_HOST` / `VELOREN_DASHBOARD_PORT`.
+- **Workers** — agent start/stop state (`POST /api/agent/*`) lives in memory, so it is per-worker. Use `--workers 1` if you rely on the dashboard to start and stop the agent; use more workers with a single-writer agent lifecycle handled externally. SQLite (`WAL` mode) is shared safely across workers for observations and logs.
+- **Persistence** — observations and agent logs are written to `.hermes/artifacts/dashboard.db` (gitignored); the directory must be writable by the gunicorn process.
+- **Graceful shutdown** — gunicorn handles SIGTERM/SIGINT with its `--graceful-timeout`; the dev server (`python3 web/app.py`) handles signals itself.
+- **TLS** — terminate TLS in a reverse proxy (nginx, Caddy, or similar) in front of gunicorn; the dashboard itself serves HTTP only.
+
+Example systemd unit (`/etc/systemd/system/veloren-dashboard.service`):
+
+```ini
+[Unit]
+Description=Veloren Agent Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rizzo/Work/veloren-agent-intergration
+EnvironmentFile=/home/rizzo/Work/veloren-agent-intergration/.env
+ExecStart=gunicorn --chdir web --bind 0.0.0.0:5000 --workers 2 --threads 4 --timeout 30 app:app
+Restart=always
+User=rizzo
+
+[Install]
+WantedBy=multi-user.target
+```
+
 ## Prerequisites
 
 | Tool | Purpose | Install check |
@@ -137,6 +241,11 @@ veloren-agent-intergration/
 │   ├── api-reference.md            # JSON command/observation spec
 │   ├── troubleshooting.md          # Known issues + fixes
 │   └── contributing.md             # Contributor guide
+├── web/
+│   ├── app.py                      # Flask dashboard: API-key auth, SQLite persistence, /api/health, graceful shutdown
+│   ├── requirements.txt            # flask, python-dotenv
+│   ├── templates/dashboard.html
+│   └── static/                     # app.js, style.css
 ├── scripts/
 │   ├── start-server.sh             # Start veloren-server-cli in tmux
 │   ├── stop-server.sh              # Stop the local server
