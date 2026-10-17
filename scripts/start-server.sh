@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Start the local Veloren dedicated server in tmux for agent testing.
-# Uses --non-interactive (no stdin) and --no-auth (local testing only).
+# Start the public Veloren dedicated server.
+# Uses --non-interactive (no stdin) with official auth server (no --no-auth).
+# Server name and auth are configured in settings.ron.
 
 set -euo pipefail
 
@@ -14,7 +15,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 echo "Starting Veloren dedicated server on port $PORT (session: $SESSION)..."
-tmux new-session -d -s "$SESSION" "$SERVER_BIN --non-interactive --no-auth"
+tmux new-session -d -s "$SESSION" "$SERVER_BIN --non-interactive"
 
 echo "Server started. Attach with: tmux attach -t $SESSION"
 echo "Detach with: Ctrl-b d"
