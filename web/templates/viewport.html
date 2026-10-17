@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veloren Agent — Live Viewport</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  .viewport-shell { display: flex; flex-direction: column; height: 100vh; }
+  .viewport-header { background: #0e151f; border-bottom: 1px solid var(--border); padding: 10px 18px; }
+  .viewport-header h1 { margin: 0; font-size: 17px; letter-spacing: -0.4px; }
+  .viewport-header .muted { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .viewport-body { display: flex; flex: 1; overflow: hidden; }
+  .viewport-map { flex: 1; position: relative; background: #0a0d13; border-right: 1px solid var(--border); }
+  #viewport-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #viewport-minimap { position: absolute; bottom: 10px; right: 10px; width: 160px; height: 130px; border: 1px solid var(--border); background: #05080c; border-radius: 6px; overflow: hidden; z-index: 4; }
+  #viewport-minimap canvas { display: block; width: 100%; height: 100%; cursor: pointer; touch-action: none; }
+  .viewport-overlay { position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; }
+  .viewport-hud { background: rgba(10, 13, 19, 0.85); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; backdrop-filter: blur(4px); }
+  .viewport-hud .row { display: flex; gap: 18px; margin-bottom: 6px; font-family: var(--mono); font-size: 12px; }
+  .viewport-hud .row:last-child { margin-bottom: 0; }
+  .viewport-hud .label { color: var(--muted); }
+  .viewport-hud .value { color: var(--text); font-variant-numeric: tabular-nums; }
+  .viewport-hud .value.ok { color: var(--ok); }
+  .viewport-hud .value.bad { color: var(--bad); }
+  .viewport-hud .value.warn { color: var(--warn); }
+  .viewport-sidebar { width: 320px; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .viewport-sidebar h3 { margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); padding: 0 14px; }
+  .viewport-card { flex: 1; overflow: auto; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .viewport-card:last-child { border-bottom: none; }
+  .viewport-event { margin: 6px 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.4; }
+  .viewport-event .time { color: var(--muted); margin-right: 6px; }
+  .viewport-event.chat { color: #a5f3fc; }
+  .viewport-event.event { color: #f472b6; }
+  .viewport-chat { color: #60a5fa; }
+  .viewport-tick { font-size: 10px; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+  .viewport-controls { padding: 10px 14px; border-top: 1px solid var(--border); background: #0c131c; }
+  .viewport-controls .btn { font-size: 12px; padding: 6px 12px; }
+  .btn-toggle { background: #0f1620; }
+  .btn-toggle.on { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+  #viewport-empty { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--muted); font-family: var(--mono); font-size: 14px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="viewport-shell">
+  <div class="viewport-header">
+    <h1>Veloren Agent <span class="muted">&middot; Live Viewport</span></h1>
+    <div class="chips" style="margin-top: 8px;">
+      <span class="chip" id="vp-chip-server">server: &hellip;</span>
+      <span class="chip" id="vp-chip-agent">agent: &hellip;</span>
+      <span class="chip" id="vp-chip-dead">alive</span>
+    </div>
+  </div>
+
+  <div class="viewport-body">
+    <div class="viewport-map">
+      <canvas id="viewport-canvas"></canvas>
+      <canvas id="viewport-minimap"></canvas>
+      <div id="viewport-empty">Waiting for position data&hellip; start the agent and wait for observations.</div>
+      <div class="viewport-overlay">
+        <div class="viewport-hud">
+          <div class="row">
+            <span class="label">Tick</span>
+            <span class="value" id="vp-tick">—</span>
+            <span class="label">X</span>
+            <span class="value" id="vp-x">—</span>
+            <span class="label">Y</span>
+            <span class="value" id="vp-y">—</span>
+            <span class="label">Z</span>
+            <span class="value" id="vp-z">—</span>
+          </div>
+          <div class="row">
+            <span class="label">Health</span>
+            <span class="value ok" id="vp-health">— / —</span>
+            <span class="label">Registered</span>
+            <span class="value" id="vp-registered">—</span>
+            <span class="label">Presence</span>
+            <span class="value" id="vp-presence">—</span>
+          </div>
+          <div class="row viewport-tick" id="vp-updated">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="viewport-sidebar">
+      <div class="viewport-card">
+        <h3>Events</h3>
+        <div id="vp-events">Waiting for events&hellip;</div>
+      </div>
+      <div class="viewport-card">
+        <h3>Chat</h3>
+        <div id="vp-chat">Waiting for chat&hellip;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="viewport-controls">
+    <button class="btn" id="vp-btn-center">Center on agent</button>
+    <button class="btn btn-toggle" id="vp-btn-follow" aria-pressed="false">Follow agent</button>
+    <button class="btn" id="vp-btn-trail">Toggle trail</button>
+    <span class="muted" style="margin-left: auto;">API key: <code id="vp-api-key"></code></span>
+  </div>
+</div>
+
+<script>window.DASHBOARD_API_KEY = {{ api_key|tojson }};</script>
+<script>
+(function () {
+  const POLL_VIEWPORT = 1000;
+  const POLL_TRAIL = 2000;
+
+  const canvas = document.getElementById("viewport-canvas");
+  const minimap = document.getElementById("viewport-minimap");
+  const ctx = canvas.getContext("2d");
+  const mmCtx = minimap.getContext("2d");
+  const empty = document.getElementById("viewport-empty");
+
+  // HUD elements
+  const elTick = document.getElementById("vp-tick");
+  const elX = document.getElementById("vp-x");
+  const elY = document.getElementById("vp-y");
+  const elZ = document.getElementById("vp-z");
+  const elHealth = document.getElementById("vp-health");
+  const elRegistered = document.getElementById("vp-registered");
+  const elPresence = document.getElementById("vp-presence");
+  const elUpdated = document.getElementById("vp-updated");
+  const elEvents = document.getElementById("vp-events");
+  const elChat = document.getElementById("vp-chat");
+  const elChipServer = document.getElementById("vp-chip-server");
+  const elChipAgent = document.getElementById("vp-chip-agent");
+  const elChipDead = document.getElementById("vp-chip-dead");
+  const elApiKey = document.getElementById("vp-api-key");
+  const elBtnFollow = document.getElementById("vp-btn-follow");
+
+  // State
+  let trail = [];        // {x, y, z, tick}
+  let latest = null;     // {x, y, z, tick, health, ...}
+  let showTrail = true;
+  let camX = 0, camY = 0, camScale = 1;
+  let followAgent = false;
+  let canvasW = 0, canvasH = 0;
+  let dead = false;
+
+  // Interaction state
+  let isDragging = false;
+  let dragStartClient = { x: 0, y: 0 };
+  let touchLast = null;        // {clientX, clientY} single-touch drag
+  let lastTouchDist = 0;       // two-touch pinch distance
+
+  const MIN_ZOOM = 0.05;
+  const MAX_ZOOM = 16;
+
+  if (elApiKey) elApiKey.textContent = window.DASHBOARD_API_KEY || "(not set)";
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  function dpr() { return window.devicePixelRatio || 1; }
+
+  function canvasRect() { return canvas.getBoundingClientRect(); }
+
+  // Client (screen) px -> world coords at current camera state.
+  function screenToWorld(cx, cy) {
+    const r = canvasRect();
+    const d = dpr();
+    const ix = (cx - r.left) * d;
+    const iy = (cy - r.top) * d;
+    return {
+      x: camX + (ix - canvasW / 2) / camScale,
+      y: camY + (iy - canvasH / 2) / camScale,
+    };
+  }
+
+  function resize() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const d = dpr();
+    canvasW = rect.width * d;
+    canvasH = rect.height * d;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+    canvas.style.width = rect.width + "px";
+    canvas.style.height = rect.height + "px";
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    camScale = 1;
+    camX = 0;
+    camY = 0;
+    // minimap keeps its CSS size; bump internal resolution
+    const mr = minimap.getBoundingClientRect();
+    minimap.width = mr.width * d;
+    minimap.height = mr.height * d;
+    mmCtx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function worldToCanvas(wx, wy) {
+    return {
+      x: (wx - camX) * camScale + canvasW / 2,
+      y: (wy - camY) * camScale + canvasH / 2,
+    };
+  }
+
+  function centerOn(wx, wy) {
+    camX = wx;
+    camY = wy;
+  }
+
+  function fitToTrail() {
+    if (trail.length < 2) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of trail) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    const pad = 40;
+    const spanX = maxX - minX + pad * 2;
+    const spanY = maxY - minY + pad * 2;
+    const scale = Math.min(canvasW / spanX, canvasH / spanY) * 0.9;
+    camScale = Math.max(0.05, Math.min(scale, 5));
+    camX = (minX + maxX) / 2;
+    camY = (minY + maxY) / 2;
+  }
+
+  // World bounds observed so far (trail-derived). Returns {minX, minY, maxX, maxY}.
+  function observedBounds() {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of trail) {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    }
+    if (!trail.length && latest) {
+      minX = maxX = latest.x; minY = maxY = latest.y;
+    }
+    if (!trail.length && !latest) {
+      return { minX: -200, minY: -200, maxX: 200, maxY: 200 };
+    }
+    const pad = 60;
+    return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+  }
+
+  function drawGrid() {
+    ctx.save();
+    ctx.strokeStyle = "#1f2937";
+    ctx.lineWidth = 1 / dpr();
+    ctx.beginPath();
+    const grid = 100;
+    const startX = Math.floor((camX - canvasW / (2 * camScale)) / grid) * grid;
+    const startY = Math.floor((camY - canvasH / (2 * camScale)) / grid) * grid;
+    const endX = Math.ceil((camX + canvasW / (2 * camScale)) / grid) * grid;
+    const endY = Math.ceil((camY + canvasH / (2 * camScale)) / grid) * grid;
+    const ch = canvasH / dpr();
+    const cw = canvasW / dpr();
+    for (let gx = startX; gx <= endX; gx += grid) {
+      const { x } = worldToCanvas(gx, 0);
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, ch);
+    }
+    for (let gy = startY; gy <= endY; gy += grid) {
+      const { y } = worldToCanvas(0, gy);
+      ctx.moveTo(0, y);
+      ctx.lineTo(cw, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawTrail() {
+    if (!showTrail || trail.length < 2) return;
+    ctx.save();
+    ctx.lineWidth = 3 / dpr();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (let i = 1; i < trail.length; i++) {
+      const a = worldToCanvas(trail[i - 1].x, trail[i - 1].y);
+      const b = worldToCanvas(trail[i].x, trail[i].y);
+      const alpha = i / trail.length;
+      ctx.strokeStyle = `rgba(59, 130, 246, ${0.15 + 0.55 * alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawAgent(wx, wy, heading) {
+    const d = dpr();
+    const size = 12 / d;
+    const p = worldToCanvas(wx, wy);
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    if (heading) ctx.rotate(heading);
+
+    // Direction arrow
+    ctx.fillStyle = "#3b82f6";
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 1.5);
+    ctx.lineTo(size * 0.8, size * 0.8);
+    ctx.lineTo(size * 0.3, size * 0.3);
+    ctx.lineTo(-size * 0.3, size * 0.3);
+    ctx.lineTo(-size * 0.8, size * 0.8);
+    ctx.closePath();
+    ctx.fill();
+
+    // Position dot
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Dead flash
+    if (dead) {
+      ctx.strokeStyle = "#ef4444";
+      ctx.lineWidth = 2 / d;
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 1.4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  function drawMinimap() {
+    const d = dpr();
+    const mw = minimap.clientWidth;
+    const mh = minimap.clientHeight;
+    if (!mw || !mh) return;
+
+    mmCtx.clearRect(0, 0, mw, mh);
+
+    const bounds = observedBounds();
+    const spanX = bounds.maxX - bounds.minX;
+    const spanY = bounds.maxY - bounds.minY;
+    const mmScale = Math.min(mw / spanX, mh / spanY) * 0.92;
+    const mmOx = (bounds.minX + bounds.maxX) / 2;
+    const mmOy = (bounds.minY + bounds.maxY) / 2;
+
+    function mmPos(wx, wy) {
+      return {
+        x: (wx - mmOx) * mmScale + mw / 2,
+        y: (wy - mmOy) * mmScale + mh / 2,
+      };
+    }
+
+    // World bounds rect
+    mmCtx.strokeStyle = "#334155";
+    mmCtx.lineWidth = 1 / d;
+    mmCtx.strokeRect(
+      (bounds.minX - mmOx) * mmScale + mw / 2,
+      (bounds.minY - mmOy) * mmScale + mh / 2,
+      spanX * mmScale,
+      spanY * mmScale
+    );
+
+    // Label
+    mmCtx.fillStyle = "#64748b";
+    mmCtx.font = "10px " + (getComputedStyle(document.documentElement).fontFamily || "system-ui");
+    mmCtx.fillText("world bounds", 6, 14);
+
+    // Current viewport rect (dashed)
+    const vwW = canvasW / camScale;
+    const vwH = canvasH / camScale;
+    const vwX = camX - vwW / 2;
+    const vwY = camY - vwH / 2;
+    const vp = mmPos(vwX, vwY);
+    mmCtx.strokeStyle = "#3b82f6";
+    mmCtx.lineWidth = 1.5 / d;
+    mmCtx.setLineDash([4 / d, 2 / d]);
+    mmCtx.strokeRect(vp.x, vp.y, vwW * mmScale, vwH * mmScale);
+    mmCtx.setLineDash([]);
+
+    // Agent dot
+    if (latest) {
+      const a = mmPos(latest.x, latest.y);
+      mmCtx.fillStyle = "#3b82f6";
+      mmCtx.beginPath();
+      mmCtx.arc(a.x, a.y, 3 / d, 0, Math.PI * 2);
+      mmCtx.fill();
+      mmCtx.strokeStyle = "#ffffff";
+      mmCtx.lineWidth = 1 / d;
+      mmCtx.stroke();
+    }
+  }
+
+  function draw() {
+    if (followAgent && latest) {
+      centerOn(latest.x, latest.y);
+    }
+    ctx.clearRect(0, 0, canvasW / dpr(), canvasH / dpr());
+    drawGrid();
+    drawTrail();
+    if (latest) {
+      drawAgent(latest.x, latest.y, latest.heading || 0);
+    }
+    drawMinimap();
+    requestAnimationFrame(draw);
+  }
+  draw();
+
+  // ---- interaction: drag-to-pan (mouse) ----
+  function startDrag(cx, cy) {
+    isDragging = true;
+    dragStartClient = { x: cx, y: cy };
+    canvas.style.cursor = "grabbing";
+  }
+
+  function endDrag() {
+    isDragging = false;
+    canvas.style.cursor = "crosshair";
+  }
+
+  canvas.addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    startDrag(e.clientX, e.clientY);
+  });
+  window.addEventListener("mousemove", function (e) {
+    if (!isDragging) return;
+    const d = dpr();
+    const dx = (e.clientX - dragStartClient.x) * d / camScale;
+    const dy = (e.clientY - dragStartClient.y) * d / camScale;
+    camX -= dx;
+    camY -= dy;
+    dragStartClient = { x: e.clientX, y: e.clientY };
+    followAgent = false;
+    elBtnFollow.setAttribute("aria-pressed", "false");
+    elBtnFollow.classList.remove("on");
+  });
+  window.addEventListener("mouseup", endDrag);
+  canvas.addEventListener("mouseleave", endDrag);
+
+  // ---- interaction: wheel zoom (desktop) ----
+  canvas.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    const d = dpr();
+    const r = canvasRect();
+    const before = screenToWorld(e.clientX, e.clientY);
+    const factor = Math.pow(0.996, e.deltaY);
+    let s = camScale * factor;
+    s = clamp(s, MIN_ZOOM, MAX_ZOOM);
+    camScale = s;
+    camX = before.x - (e.clientX - r.left - r.width / 2) * d / camScale;
+    camY = before.y - (e.clientY - r.top - r.height / 2) * d / camScale;
+  }, { passive: false });
+
+  // ---- interaction: touch (mobile pan + pinch zoom) ----
+  canvas.addEventListener("touchstart", function (e) {
+    e.preventDefault();
+    const t = e.touches;
+    if (t.length === 2) {
+      lastTouchDist = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      touchLast = null;
+    } else if (t.length === 1) {
+      touchLast = { x: t[0].clientX, y: t[0].clientY };
+      lastTouchDist = 0;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", function (e) {
+    e.preventDefault();
+    const t = e.touches;
+    const d = dpr();
+    const r = canvasRect();
+    if (t.length === 2 && lastTouchDist > 0) {
+      // pinch-to-zoom around the midpoint between fingers
+      const dist = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      const mx = (t[0].clientX + t[1].clientX) / 2;
+      const my = (t[0].clientY + t[1].clientY) / 2;
+      const before = screenToWorld(mx, my);
+      let s = camScale * (dist / lastTouchDist);
+      s = clamp(s, MIN_ZOOM, MAX_ZOOM);
+      camScale = s;
+      camX = before.x - (mx - r.left - r.width / 2) * d / camScale;
+      camY = before.y - (my - r.top - r.height / 2) * d / camScale;
+      lastTouchDist = dist;
+      followAgent = false;
+      elBtnFollow.setAttribute("aria-pressed", "false");
+      elBtnFollow.classList.remove("on");
+    } else if (t.length === 1 && touchLast) {
+      // single-finger pan
+      const dx = (touchLast.x - t[0].clientX) * d / camScale;
+      const dy = (touchLast.y - t[0].clientY) * d / camScale;
+      camX += dx;
+      camY += dy;
+      touchLast = { x: t[0].clientX, y: t[0].clientY };
+      followAgent = false;
+      elBtnFollow.setAttribute("aria-pressed", "false");
+      elBtnFollow.classList.remove("on");
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", function (e) {
+    e.preventDefault();
+    const t = e.touches;
+    if (t.length === 0) {
+      touchLast = null;
+      lastTouchDist = 0;
+    } else if (t.length === 1) {
+      touchLast = { x: t[0].clientX, y: t[0].clientY };
+      lastTouchDist = 0;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchcancel", function () {
+    touchLast = null;
+    lastTouchDist = 0;
+  });
+
+  // ---- minimap click to pan ----
+  minimap.addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    const d = dpr();
+    const r = minimap.getBoundingClientRect();
+    const bounds = observedBounds();
+    const spanX = bounds.maxX - bounds.minX;
+    const spanY = bounds.maxY - bounds.minY;
+    const mmScale = Math.min(r.width / spanX, r.height / spanY) * 0.92;
+    const mmOx = (bounds.minX + bounds.maxX) / 2;
+    const mmOy = (bounds.minY + bounds.maxY) / 2;
+    const wx = mmOx + ((e.clientX - r.left) * d - r.width / 2) / mmScale;
+    const wy = mmOy + ((e.clientY - r.top) * d - r.height / 2) / mmScale;
+    centerOn(wx, wy);
+    followAgent = false;
+    elBtnFollow.setAttribute("aria-pressed", "false");
+    elBtnFollow.classList.remove("on");
+  });
+
+  function formatCoord(n) {
+    return typeof n === "number" ? n.toFixed(2) : "—";
+  }
+
+  function renderHud(obs) {
+    if (!obs) return;
+    elTick.textContent = obs.tick !== undefined ? obs.tick : "—";
+    elX.textContent = formatCoord(obs.x);
+    elY.textContent = formatCoord(obs.y);
+    elZ.textContent = formatCoord(obs.z);
+
+    const hc = obs.health_current;
+    const hm = obs.health_maximum;
+    if (hc !== undefined && hm !== undefined) {
+      elHealth.textContent = hc.toFixed(1) + " / " + hm.toFixed(1);
+      elHealth.className = "value " + (obs.is_dead ? "bad" : "ok");
+    } else {
+      elHealth.textContent = "— / —";
+      elHealth.className = "value";
+    }
+
+    elRegistered.textContent = obs.registered ? "yes" : "no";
+    elRegistered.className = "value " + (obs.registered ? "ok" : "bad");
+    elPresence.textContent = obs.presence || "—";
+
+    const now = new Date().toLocaleTimeString();
+    elUpdated.textContent = "Updated " + now;
+
+    elChipDead.textContent = obs.is_dead ? "DEAD" : "alive";
+    elChipDead.className = "chip " + (obs.is_dead ? "down" : "up");
+  }
+
+  function renderEvents(obs) {
+    const events = obs.events || [];
+    if (events.length === 0) {
+      elEvents.textContent = "no recent events";
+      return;
+    }
+    elEvents.innerHTML = events
+      .slice()
+      .reverse()
+      .map(function (e) {
+        return '<div class="viewport-event event"><span class="time">[event]</span> ' +
+               escapeHtml(String(e)) + '</div>';
+      })
+      .join("");
+  }
+
+  function renderChat(obs) {
+    const chat = obs.chat || [];
+    if (chat.length === 0) {
+      elChat.textContent = "no recent chat";
+      return;
+    }
+    elChat.innerHTML = chat
+      .slice()
+      .reverse()
+      .map(function (c) {
+        return '<div class="viewport-event viewport-chat"><span class="time">[chat]</span> ' +
+               escapeHtml(String(c)) + '</div>';
+      })
+      .join("");
+  }
+
+  function escapeHtml(str) {
+    if (str === undefined || str === null) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function request(url, opts) {
+    opts = opts || {};
+    const headers = Object.assign({}, opts.headers);
+    const key = window.DASHBOARD_API_KEY;
+    if (key) headers["X-API-Key"] = key;
+    return fetch(url, Object.assign({}, opts, { headers: headers })).then(function (resp) {
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return resp.json();
+    });
+  }
+
+  function pollLatest() {
+    request("/api/viewport/latest").then(function (data) {
+      if (!data.ok) {
+        empty.style.display = "block";
+        return;
+      }
+      empty.style.display = "none";
+      latest = data;
+      dead = !!data.is_dead;
+      renderHud(data);
+      renderEvents(data);
+      renderChat(data);
+
+      // Chip states
+      elChipServer.textContent = data.registered ? "server: connected" : "server: disconnected";
+      elChipServer.className = "chip " + (data.registered ? "up" : "down");
+      elChipAgent.textContent = "agent: " + (data.registered ? "in-game" : "connecting");
+      elChipAgent.className = "chip " + (data.registered ? "up" : "unknown");
+
+      // Add to trail if position changed
+      const lastTrail = trail[trail.length - 1];
+      if (!lastTrail || lastTrail.x !== data.x || lastTrail.y !== data.y) {
+        trail.push({ x: data.x, y: data.y, z: data.z, tick: data.tick });
+        if (trail.length > 500) trail.shift();
+      }
+    }).catch(function () {
+      // fail silently, retry next poll
+    });
+  }
+
+  function pollTrail() {
+    request("/api/viewport/trail?limit=300").then(function (data) {
+      if (data.ok && data.trail && data.trail.length > 0) {
+        // Merge server trail with live trail (avoid duplicates)
+        const serverTicks = new Set(trail.map(t => t.tick));
+        for (const p of data.trail) {
+          if (!serverTicks.has(p.tick)) {
+            trail.push(p);
+          }
+        }
+        if (trail.length > 500) trail = trail.slice(-500);
+        // Auto-fit on first load
+        if (camX === 0 && camY === 0 && trail.length >= 2) fitToTrail();
+      }
+    }).catch(function () {});
+  }
+
+  function pollStatus() {
+    request("/api/status").then(function (data) {
+      elChipServer.textContent = data.server_running ? "server: running" : "server: down";
+      elChipServer.className = "chip " + (data.server_running ? "up" : "down");
+      elChipAgent.textContent = data.agent_running ? "agent: running" : "agent: stopped";
+      elChipAgent.className = "chip " + (data.agent_running ? "up" : "down");
+    }).catch(function () {});
+  }
+
+  // Wire controls
+  document.getElementById("vp-btn-center").addEventListener("click", function () {
+    if (latest) centerOn(latest.x, latest.y);
+  });
+  elBtnFollow.addEventListener("click", function () {
+    followAgent = !followAgent;
+    const on = followAgent;
+    this.setAttribute("aria-pressed", String(on));
+    this.classList.toggle("on", on);
+    if (on && latest) centerOn(latest.x, latest.y);
+  });
+  document.getElementById("vp-btn-trail").addEventListener("click", function () {
+    showTrail = !showTrail;
+    this.textContent = showTrail ? "Hide trail" : "Show trail";
+  });
+
+  // Start polling
+  pollLatest();
+  pollTrail();
+  pollStatus();
+  setInterval(pollLatest, POLL_VIEWPORT);
+  setInterval(pollTrail, POLL_TRAIL);
+  setInterval(pollStatus, 3000);
+})();
+</script>
+</body>
+</html>
