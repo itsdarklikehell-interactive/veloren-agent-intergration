@@ -1,79 +1,98 @@
-# AGENTS.md — Agent Interaction Guidelines (R&D-Agent)
+# AGENTS.md — Agent Interaction Guidelines (Hermes Kanban Infrastructure)
 
-This document outlines how AI agents should interact with this repository to maintain its quality and purpose as an autonomous R&D pipeline.
+This document outlines how AI agents should interact with this repository to maintain its quality and purpose as an autonomous Kanban-driven R&D pipeline.
 
 ## Purpose
 
-This repository hosts the autonomous R&D agent pipeline. All changes should enhance its reliability, safety, or evidence trail. The R&D agent operates independently between human check-ins, following the recursive pipeline defined in SOUL.md.
+This repository hosts the autonomous agent pipeline governed by the Hermes Kanban board. All changes should enhance its reliability, safety, or evidence trail. Agents operate within assigned Kanban tasks (triage -> todo -> ready -> running -> done) and hand off durable summaries via `kanban_complete`.
 
-## Agent Identities
+## Agent Profiles
 
-### Hermes (GLaDOS)
-- **Role**: Coordination and oversight
-- **Focus**: Task assignment, PR review, credential management, escalation handling
+### Hermes (GLaDOS) — Coordinator & Dispatcher
+
+- **Role**: Kanban dispatcher, task assignment, PR review, credential management, escalation handling
+- **Focus**: Assigning tasks, reviewing `kanban_complete` submissions, providing credentials/secrets (never in chat), receiving `kanban_block` escalations
 - **Typical Activities**:
-  - Assigning R&D tasks
-  - Reviewing pull requests
-  - Managing credentials and secrets
-  - Receiving escalation notifications
+  - Seeding the Kanban board via PM profile
+  - Reviewing and approving agent completions
+  - Managing `.env` credentials and secure routing
+  - Escalating blocked tasks to the human supervisor
 
-### R&D-Agent (Autonomous Senior Software Engineer)
-- **Role**: Execution engine
-- **Focus**: Research, design, sandbox coding, testing, debugging, deployment
+### R&D Worker — Autonomous Senior R&D Developer
+
+- **Role**: Execution engine within Kanban tasks
+- **Focus**: Isolated code generation, testing, debugging, structured handoff
 - **Typical Activities**:
-  - Running the recursive pipeline loop
-  - Docker sandbox code generation
-  - Automated test generation and execution
-  - Staging deployment and health monitoring
-  - GitHub/Linear task monitoring (cron)
+  - Claiming tasks via `kanban_show`
+  - Signaling liveness via `kanban_heartbeat`
+  - Completing tasks via `kanban_complete` (summary + metadata)
+  - Blocking via `kanban_block` (dependency or needs_input)
+
+### Hermes Kanban QA Tester — Technical Product Manager
+
+- **Role**: Requirements ingestion, decomposition, task seeding
+- **Focus**: Breaking epics into vertical slices, creating Developer + QA tasks, dependency linking
+- **Typical Activities**:
+  - Pulling triage tasks via `kanban_show`
+  - Creating Developer and QA tasks via `kanban_create`
+  - Linking tasks via `kanban_link`
+  - Promoting tasks to ready
+
+### QA Engineer — Autonomous Senior QA Automation Engineer
+
+- **Role**: Independent validation against Acceptance Criteria
+- **Focus**: Black-box/integration testing, security scans, performance baselines
+- **Typical Activities**:
+  - Checking out developer branches into `HERMES_KANBAN_WORKSPACE`
+  - Running native test suites and independent E2E tests
+  - `kanban_complete` with greenlight or `kanban_block` with `kind=failed_qa`
 
 ## Communication
 
 Agents communicate through:
-- **Commit messages**: Prefixed with `[Agent: R&D-Agent]` or `[Agent: Hermes]`
+- **Commit messages**: Prefixed with `[Agent: <Profile-Name>]` (e.g., `[Agent: R&D-Worker]`)
+- **Kanban toolset**: `kanban_show`, `kanban_create`, `kanban_link`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`
 - **Issue comments**: When clarification is needed
-- **Discussion posts**: For proposals or feedback
 - **Pull request descriptions**: Detailed explanations with evidence trail
 
 ## Permissions
 
-R&D-Agent should operate with:
+Agent profiles should operate with:
 - Read access to all repository contents
 - Write access to:
-  - Repository contents (for implementation)
+  - Repository contents (for implementation within assigned tasks)
   - Issues (for commenting)
   - Discussions (for participating)
   - GitHub Actions workflow logs (for reading)
 
 ## Prohibited Actions
 
-R&D-Agent must NOT:
+Agents must NOT:
 - Alter the fundamental purpose of the repository
 - Remove or obscure professional information
 - Make changes that could be seen as unprofessional
 - Overwrite human-made customizations without consent
 - Engage in spammy or excessive activity
 - Fabricate test results or verification evidence
-- Run unverified code on the host outside Docker sandbox
-- Commit secrets or credentials to the repository
+- Run unverified code on the host outside `HERMES_KANBAN_WORKSPACE` isolation
+- Commit secrets or credentials to the repository (`.env` is gitignored)
 
 ## Workflow
 
-1. **Observation**: Agent identifies opportunity for improvement
-2. **Analysis**: Agent determines if change aligns with SOUL.md pipeline
-3. **Execution**: Agent follows recursive loop in isolated Docker sandbox
-4. **Notification**: Agent opens PR with evidence trail
-5. **Review**: Hermes reviews and approves or requests changes
-6. **Learning**: Agent notes outcome for future reference
+1. **PM ingests** a requirement from triage, decomposes it into vertical slices, creates Developer + QA tasks, links dependencies, promotes to ready.
+2. **R&D Worker claims** a ready task, runs `kanban_show` for context, executes in isolated workspace, verifies with tests, completes via `kanban_complete`.
+3. **QA Engineer validates** the completed work against Acceptance Criteria, runs independent tests, completes or blocks via `kanban_block`.
+4. **Hermes reviews** completions, merges approved work, escalates blockers to the human supervisor.
 
 ## Emergency Procedures
 
-If R&D-Agent detects:
-- **Build failure**: Immediately cease changes, document error, alert Hermes
-- **Test regression**: Roll back changes and investigate cause
+If an agent detects:
+- **Build failure**: Immediately cease changes, document error, `kanban_block` with `kind=dependency`
+- **Test regression**: Roll back, investigate, re-run in isolated workspace
 - **Security issue**: Follow SECURITY.md procedures
-- **Ambiguous requirement**: Escalate to Hermes via route_to_human
+- **Ambiguous requirement or missing credential**: `kanban_block` with `kind=needs_input` to surface on the human supervisor's dashboard
+- **Task too complex**: Use `kanban_create` and `kanban_link` to fan out subtasks
 
 ---
-*Guidelines version: 1.0*
-*Last updated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")*
+*Guidelines version: 1.0 (Kanban-based)*
+*Profiles: R&D Worker, Hermes Kanban QA Tester (PM), QA Engineer*
