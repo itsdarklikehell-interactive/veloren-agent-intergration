@@ -147,8 +147,6 @@
   const MIN_ZOOM = 0.05;
   const MAX_ZOOM = 16;
 
-  if (elApiKey) elApiKey.textContent = window.DASHBOARD_API_KEY || "(not set)";
-
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function dpr() { return window.devicePixelRatio || 1; }
 

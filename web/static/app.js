@@ -3,9 +3,25 @@
   const POLL_STATUS = 2000;
   const POLL_LOGS = 3000;
   const POLL_METRICS = 5000;
+  const POLL_ANALYTICS = 5000;
 
   const el = (id) => document.getElementById(id);
   let latencyHistory = []; // {t: epochMs, v: avg seconds} rolling window for the sparkline
+  let analyticsWindow = "all"; // selected lookback window for /api/analytics
+  let apiKeyPrompted = false;
+
+  function apiKey() {
+    return window.DASHBOARD_API_KEY || localStorage.getItem("veloren_dashboard_api_key") || "";
+  }
+
+  function promptForApiKey() {
+    if (apiKeyPrompted) return false;
+    const key = prompt("Veloren dashboard API key required — paste your X-API-Key value (it is stored in localStorage only).");
+    if (!key) return false;
+    try { localStorage.setItem("veloren_dashboard_api_key", key); } catch (e) {}
+    apiKeyPrompted = true;
+    return true;
+  }
 
   function setChip(id, state, label) {
     const chip = el(id);
@@ -128,9 +144,12 @@
   function request(url, opts) {
     opts = opts || {};
     const headers = Object.assign({}, opts.headers);
-    const key = localStorage.getItem("veloren_dashboard_api_key");
+    const key = apiKey();
     if (key) headers["X-API-Key"] = key;
     return fetch(url, Object.assign({}, opts, { headers: headers })).then(function (resp) {
+      if (resp.status === 401 && promptForApiKey()) {
+        return request(url, opts);
+      }
       if (resp.status === 401) throw new Error("HTTP 401 — dashboard API key required (send X-API-Key)");
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       return resp.json();
@@ -225,6 +244,172 @@
       .join(" ");
     svg.innerHTML =
       '<polyline points="' + escapeHtml(points) + '" class="sparkline-line"/>';
+  }
+
+  // ---- tiny vanilla-SVG chart helpers (no external dependencies) ----
+  function svgPath(points) {
+    return points.map(function (p, i) {
+      return (i === 0 ? "M" : "L") + p.x + "," + p.y;
+    }).join(" ");
+  }
+
+  function chartCoords(series, valueFn, w, h, pad) {
+    var vals = series.map(valueFn);
+    var vmin = Math.min.apply(null, vals);
+    var vmax = Math.max.apply(null, vals);
+    var range = vmax - vmin || 1;
+    return series.map(function (s, i) {
+      return {
+        x: pad.l + (i / Math.max(1, series.length - 1)) * (w - pad.l - pad.r),
+        y: h - pad.b - ((valueFn(s) - vmin) / range) * (h - pad.t - pad.b),
+      };
+    });
+  }
+
+  function renderLineChart(id, series, valueKey, color, labelId, labelFn) {
+    var svg = el(id);
+    if (!svg) return;
+    var w = 100, h = 100, pad = { l: 6, r: 3, t: 4, b: 12 };
+    var pts = series.filter(function (s) { return typeof s[valueKey] === "number"; });
+    if (pts.length < 2) {
+      svg.innerHTML = "";
+      if (labelId) el(labelId).textContent = "no data";
+      return;
+    }
+    var coords = chartCoords(pts, function (s) { return s[valueKey]; }, w, h, pad);
+    if (labelId && labelFn) el(labelId).textContent = labelFn(pts);
+    svg.innerHTML = '<path d="' + escapeHtml(svgPath(coords)) + '" class="line" stroke="' + color + '"/>';
+  }
+
+  function renderHealthTrend(id, series) {
+    var svg = el(id);
+    if (!svg) return;
+    var w = 100, h = 100, pad = { l: 6, r: 3, t: 4, b: 12 };
+    var pts = series.filter(function (s) { return typeof s.current === "number"; });
+    if (pts.length < 2) {
+      svg.innerHTML = "";
+      return;
+    }
+    var now = chartCoords(pts, function (s) { return s.current; }, w, h, pad);
+    var max = chartCoords(pts, function (s) { return typeof s.maximum === "number" ? s.maximum : s.current; }, w, h, pad);
+    svg.innerHTML =
+      '<path d="' + escapeHtml(svgPath(now)) + '" class="line" stroke="var(--accent)"/>' +
+      '<path d="' + escapeHtml(svgPath(max)) + '" class="line line-secondary" stroke="var(--warn)"/>';
+  }
+
+  function renderHistogram(id, series) {
+    var svg = el(id);
+    if (!svg) return;
+    var w = 100, h = 100, pad = { l: 8, r: 4, t: 4, b: 14 };
+    var vals = series.map(function (s) { return s.avg_ms; }).filter(function (v) { return typeof v === "number"; });
+    if (vals.length < 2) {
+      svg.innerHTML = "";
+      return;
+    }
+    var vmin = Math.min.apply(null, vals);
+    var vmax = Math.max.apply(null, vals);
+    var range = vmax - vmin || 1;
+    var bins = 10, counts = new Array(bins).fill(0);
+    vals.forEach(function (v) {
+      var b = Math.min(bins - 1, Math.floor(((v - vmin) / range) * bins));
+      counts[b]++;
+    });
+    var cmax = Math.max.apply(null, counts);
+    var bw = (w - pad.l - pad.r) / bins;
+    var html = "";
+    counts.forEach(function (c, i) {
+      var hh = cmax ? (c / cmax) * (h - pad.t - pad.b) : 0;
+      html += '<rect x="' + (pad.l + i * bw) + '" y="' + (h - pad.b - hh) +
+        '" width="' + (bw - 1) + '" height="' + hh + '" class="bar"/>';
+    });
+    svg.innerHTML = html;
+  }
+
+  function renderDonut(id, presence) {
+    var svg = el(id);
+    if (!svg) return;
+    var items = Object.entries(presence || {}).filter(function (e) { return e[1] > 0; });
+    var total = items.reduce(function (s, e) { return s + e[1]; }, 0);
+    if (!total) {
+      svg.innerHTML = "";
+      return;
+    }
+    var cx = 50, cy = 50, r = 36, ir = 24;
+    var colors = ["#3b82f6", "#22c55e", "#eab308", "#ef4444", "#a5f3fc", "#8b97a5"];
+    var start = -Math.PI / 2, html = "";
+    items.forEach(function (e, i) {
+      var sweep = e[1] / total;
+      var end = start + sweep * 2 * Math.PI;
+      var large = sweep > 0.5 ? 1 : 0;
+      var x1 = cx + r * Math.cos(start), y1 = cy + r * Math.sin(start);
+      var x2 = cx + r * Math.cos(end), y2 = cy + r * Math.sin(end);
+      html += '<path d="M ' + x1 + ' ' + y1 + ' A ' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x2 + ' ' + y2 +
+        ' L ' + (cx + ir * Math.cos(end)) + ' ' + (cy + ir * Math.sin(end)) +
+        ' A ' + ir + ' ' + ir + ' 0 ' + large + ' 0 ' + (cx + ir * Math.cos(start)) + ' ' + (cy + ir * Math.sin(start)) + ' Z" ' +
+        'fill="' + colors[i % colors.length] + '" class="slice"/>';
+      start = end;
+    });
+    svg.innerHTML = html;
+  }
+
+  function fmtPct(n) {
+    return typeof n === "number" ? n.toFixed(1) + "%" : "—";
+  }
+
+  function renderAnalytics(data) {
+    if (!data) return;
+    var obs = data.observations || {};
+    var hl = data.health || {};
+    setText("an-total", fmtCount(obs.total));
+    setText("an-registered", obs.total ? fmtPct(obs.registered_pct) : "—");
+    setText("an-health", (hl.avg_current !== null ? hl.avg_current : "—") + " / " + (hl.avg_maximum !== null ? hl.avg_maximum : "—"));
+    setText("an-peak", fmtCount(obs.peak_per_minute));
+
+    var series = data.series || {};
+    renderLineChart("an-line", series.per_minute, "n", "#3b82f6", "an-line-labels", function (pts) {
+      var vals = pts.map(function (p) { return p.n; });
+      var sum = vals.reduce(function (a, b) { return a + b; }, 0);
+      return "min: " + fmtCount(Math.min.apply(null, vals)) +
+        " · avg: " + (vals.length ? (sum / vals.length).toFixed(1) : "—") +
+        " · max: " + fmtCount(Math.max.apply(null, vals));
+    });
+    renderHealthTrend("an-health-trend", series.health);
+    renderHistogram("an-latency-hist", (series && series.latency) || []);
+    renderDonut("an-presence", data.presence);
+  }
+
+  function pollAnalytics() {
+    // Analytics requires the API key; skip silently until one is configured.
+    if (!apiKey()) return;
+    request("/api/analytics?window=" + analyticsWindow).then(renderAnalytics).catch(function () {});
+  }
+
+  function downloadExport(fmt) {
+    var headers = {};
+    var key = apiKey();
+    if (key) headers["X-API-Key"] = key;
+    fetch("/api/observations/export?format=" + fmt + "&window=" + analyticsWindow, { headers: headers })
+      .then(function (resp) {
+        if (resp.status === 401 && promptForApiKey()) {
+          return downloadExport(fmt);
+        }
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "observations-" + new Date().toISOString().slice(0, 16) + (fmt === "csv" ? ".csv" : ".json");
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        show("msg-export", true, "Export " + fmt.toUpperCase() + " download started.");
+      })
+      .catch(function (err) {
+        show("msg-export", false, err.message || "export failed");
+      });
   }
 
   function pollMetrics() {
