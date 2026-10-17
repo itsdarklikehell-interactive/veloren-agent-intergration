@@ -1,7 +1,7 @@
-diff --git c/common/base/src/userdata_dir.rs w/common/base/src/userdata_dir.rs
+diff --git a/common/base/src/userdata_dir.rs b/common/base/src/userdata_dir.rs
 index 62c01ad8e..0af900574 100644
---- c/common/base/src/userdata_dir.rs
-+++ w/common/base/src/userdata_dir.rs
+--- a/common/base/src/userdata_dir.rs
++++ b/common/base/src/userdata_dir.rs
 @@ -59,7 +59,11 @@ pub fn userdata_dir() -> PathBuf {
          // 3. The CARGO_WORKSPACE_DIR/userdata compile time environment variable
          //    defined in .cargo/config.toml
@@ -15,10 +15,10 @@ index 62c01ad8e..0af900574 100644
              let exe_path = std::env::current_exe()
                  .expect("Failed to retrieve executable path!");
              // If this path exists
-diff --git c/common/src/event.rs w/common/src/event.rs
+diff --git a/common/src/event.rs b/common/src/event.rs
 index d21580256..4d695069d 100644
---- c/common/src/event.rs
-+++ w/common/src/event.rs
+--- a/common/src/event.rs
++++ b/common/src/event.rs
 @@ -698,7 +698,7 @@ macro_rules! event_emitters {
      ($($vis:vis struct $read_data:ident[$emitters:ident] { $($(#[$($tt:tt)*])? $ev_ident:ident: $ty:ty),+ $(,)? })+) => {
          mod event_emitters {
@@ -28,10 +28,10 @@ index d21580256..4d695069d 100644
              $(
              #[derive(specs::SystemData)]
              pub struct $read_data<'a> {
-diff --git c/common/src/slowjob.rs w/common/src/slowjob.rs
+diff --git a/common/src/slowjob.rs b/common/src/slowjob.rs
 index 4812064d4..c0fff8122 100644
---- c/common/src/slowjob.rs
-+++ w/common/src/slowjob.rs
+--- a/common/src/slowjob.rs
++++ b/common/src/slowjob.rs
 @@ -186,7 +186,7 @@ impl InternalSlowJobPool {
      /// returns order of configuration which are queued next
      fn calc_queued_order(
@@ -85,10 +85,10 @@ index 4812064d4..c0fff8122 100644
              .collect::<HashMap<_, u64>>();
          let limit = self.global_limit as usize;
          let queued_order = self.calc_queued_order(queued, limit);
-diff --git c/common/state/src/state.rs w/common/state/src/state.rs
+diff --git a/common/state/src/state.rs b/common/state/src/state.rs
 index eabb2af2e..38896fa10 100644
---- c/common/state/src/state.rs
-+++ w/common/state/src/state.rs
+--- a/common/state/src/state.rs
++++ b/common/state/src/state.rs
 @@ -36,10 +36,11 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
  use specs::{
      Component, DispatcherBuilder, Entity as EcsEntity, WorldExt,
@@ -165,10 +165,10 @@ index eabb2af2e..38896fa10 100644
          }
      }
  
-diff --git c/common/systems/src/arcing.rs w/common/systems/src/arcing.rs
+diff --git a/common/systems/src/arcing.rs b/common/systems/src/arcing.rs
 index e08d42676..fafb0aada 100644
---- c/common/systems/src/arcing.rs
-+++ w/common/systems/src/arcing.rs
+--- a/common/systems/src/arcing.rs
++++ b/common/systems/src/arcing.rs
 @@ -18,6 +18,9 @@ use common::{
  };
  use common_ecs::{Job, Origin, Phase, System};
@@ -179,10 +179,10 @@ index e08d42676..fafb0aada 100644
  
  event_emitters! {
      struct Events[Emitters] {
-diff --git c/common/systems/src/aura.rs w/common/systems/src/aura.rs
+diff --git a/common/systems/src/aura.rs b/common/systems/src/aura.rs
 index 654eea574..a0a330e01 100644
---- c/common/systems/src/aura.rs
-+++ w/common/systems/src/aura.rs
+--- a/common/systems/src/aura.rs
++++ b/common/systems/src/aura.rs
 @@ -15,6 +15,9 @@ use common::{
  };
  use common_ecs::{Job, Origin, Phase, System};
@@ -193,10 +193,10 @@ index 654eea574..a0a330e01 100644
  
  event_emitters! {
      struct Events[Emitters] {
-diff --git c/common/systems/src/beam.rs w/common/systems/src/beam.rs
+diff --git a/common/systems/src/beam.rs b/common/systems/src/beam.rs
 index 114047f2d..7e2fda878 100644
---- c/common/systems/src/beam.rs
-+++ w/common/systems/src/beam.rs
+--- a/common/systems/src/beam.rs
++++ b/common/systems/src/beam.rs
 @@ -22,9 +22,13 @@ use common_ecs::{Job, Origin, ParMode, Phase, System};
  use rand::RngExt;
  use rayon::iter::ParallelIterator;
@@ -211,10 +211,10 @@ index 114047f2d..7e2fda878 100644
  
  event_emitters! {
      struct ReadAttackEvents[AttackEmitters] {
-diff --git c/common/systems/src/buff.rs w/common/systems/src/buff.rs
+diff --git a/common/systems/src/buff.rs b/common/systems/src/buff.rs
 index 62081ef09..7d1e2af40 100644
---- c/common/systems/src/buff.rs
-+++ w/common/systems/src/buff.rs
+--- a/common/systems/src/buff.rs
++++ b/common/systems/src/buff.rs
 @@ -29,10 +29,14 @@ use common_ecs::{Job, Origin, ParMode, Phase, System};
  use rand::RngExt;
  use rayon::iter::ParallelIterator;
@@ -230,10 +230,10 @@ index 62081ef09..7d1e2af40 100644
  
  event_emitters! {
      struct Events[EventEmitters] {
-diff --git c/common/systems/src/character_behavior.rs w/common/systems/src/character_behavior.rs
+diff --git a/common/systems/src/character_behavior.rs b/common/systems/src/character_behavior.rs
 index 67c5e00e7..876fe811d 100644
---- c/common/systems/src/character_behavior.rs
-+++ w/common/systems/src/character_behavior.rs
+--- a/common/systems/src/character_behavior.rs
++++ b/common/systems/src/character_behavior.rs
 @@ -1,5 +1,6 @@
  use common_net::synced_components::Heads;
  use specs::{
@@ -251,10 +251,10 @@ index 67c5e00e7..876fe811d 100644
  
  #[derive(SystemData)]
  pub struct ReadData<'a> {
-diff --git c/common/systems/src/controller.rs w/common/systems/src/controller.rs
+diff --git a/common/systems/src/controller.rs b/common/systems/src/controller.rs
 index 35916376a..2e0426c81 100644
---- c/common/systems/src/controller.rs
-+++ w/common/systems/src/controller.rs
+--- a/common/systems/src/controller.rs
++++ b/common/systems/src/controller.rs
 @@ -13,6 +13,9 @@ use common::{
  };
  use common_ecs::{Job, Origin, Phase, System};
@@ -265,10 +265,10 @@ index 35916376a..2e0426c81 100644
  use tracing::warn;
  use vek::*;
  
-diff --git c/common/systems/src/interpolation.rs w/common/systems/src/interpolation.rs
+diff --git a/common/systems/src/interpolation.rs b/common/systems/src/interpolation.rs
 index 4b0271520..f72bb71b2 100644
---- c/common/systems/src/interpolation.rs
-+++ w/common/systems/src/interpolation.rs
+--- a/common/systems/src/interpolation.rs
++++ b/common/systems/src/interpolation.rs
 @@ -5,7 +5,11 @@ use common::{
  use common_base::prof_span;
  use common_ecs::{Job, Origin, Phase, System};
@@ -281,10 +281,10 @@ index 4b0271520..f72bb71b2 100644
      Entities, ParJoin, Read, ReadStorage, SystemData, WriteStorage, prelude::ParallelIterator,
      shred,
  };
-diff --git c/common/systems/src/melee.rs w/common/systems/src/melee.rs
+diff --git a/common/systems/src/melee.rs b/common/systems/src/melee.rs
 index c30a8bccc..dc3e0f301 100644
---- c/common/systems/src/melee.rs
-+++ w/common/systems/src/melee.rs
+--- a/common/systems/src/melee.rs
++++ b/common/systems/src/melee.rs
 @@ -22,9 +22,13 @@ use common::{
  use common_ecs::{Job, Origin, Phase, System};
  use itertools::Itertools;
@@ -299,10 +299,10 @@ index c30a8bccc..dc3e0f301 100644
  
  event_emitters! {
      struct ReadAttackEvents[AttackEmitters] {
-diff --git c/common/systems/src/phys/mod.rs w/common/systems/src/phys/mod.rs
+diff --git a/common/systems/src/phys/mod.rs b/common/systems/src/phys/mod.rs
 index f7ff47348..b03d17841 100644
---- c/common/systems/src/phys/mod.rs
-+++ w/common/systems/src/phys/mod.rs
+--- a/common/systems/src/phys/mod.rs
++++ b/common/systems/src/phys/mod.rs
 @@ -24,9 +24,12 @@ use common_base::{prof_span, span};
  use common_ecs::{Job, Origin, ParMode, Phase, PhysicsMetrics, System};
  use rayon::iter::ParallelIterator;
@@ -324,10 +324,10 @@ index f7ff47348..b03d17841 100644
                          // Fake the train being sat on the ground
                          physics_state.on_ground = Some(Block::new(BlockKind::Rock, Rgb::zero()));
                          physics_state.in_fluid = Some(Fluid::Air {
-diff --git c/common/systems/src/pool.rs w/common/systems/src/pool.rs
+diff --git a/common/systems/src/pool.rs b/common/systems/src/pool.rs
 index 4a6f65d10..0106e9e2d 100644
---- c/common/systems/src/pool.rs
-+++ w/common/systems/src/pool.rs
+--- a/common/systems/src/pool.rs
++++ b/common/systems/src/pool.rs
 @@ -21,9 +21,13 @@ use common::{
  };
  use common_ecs::{Job, Origin, Phase, System};
@@ -342,10 +342,10 @@ index 4a6f65d10..0106e9e2d 100644
  
  event_emitters! {
      struct Events[Emitters] {
-diff --git c/common/systems/src/projectile.rs w/common/systems/src/projectile.rs
+diff --git a/common/systems/src/projectile.rs b/common/systems/src/projectile.rs
 index 3233d89ba..4eaf33bab 100644
---- c/common/systems/src/projectile.rs
-+++ w/common/systems/src/projectile.rs
+--- a/common/systems/src/projectile.rs
++++ b/common/systems/src/projectile.rs
 @@ -28,9 +28,12 @@ use common_ecs::{Job, Origin, Phase, System};
  use itertools::Either;
  use rand::RngExt;
@@ -367,10 +367,10 @@ index 3233d89ba..4eaf33bab 100644
                                      // Note that if the expected fireworks per firework is > 1, this
                                      // will eventually cause
                                      // enough server lag that more players can't log in.
-diff --git c/common/systems/src/shockwave.rs w/common/systems/src/shockwave.rs
+diff --git a/common/systems/src/shockwave.rs b/common/systems/src/shockwave.rs
 index 9e703492e..2c9b375b0 100644
---- c/common/systems/src/shockwave.rs
-+++ w/common/systems/src/shockwave.rs
+--- a/common/systems/src/shockwave.rs
++++ b/common/systems/src/shockwave.rs
 @@ -22,6 +22,9 @@ use common::{
  use common_ecs::{Job, Origin, Phase, System};
  use rand::RngExt;
@@ -381,10 +381,10 @@ index 9e703492e..2c9b375b0 100644
  use vek::*;
  
  event_emitters! {
-diff --git c/common/systems/src/stats.rs w/common/systems/src/stats.rs
+diff --git a/common/systems/src/stats.rs b/common/systems/src/stats.rs
 index 3d0b651aa..6486bd170 100644
---- c/common/systems/src/stats.rs
-+++ w/common/systems/src/stats.rs
+--- a/common/systems/src/stats.rs
++++ b/common/systems/src/stats.rs
 @@ -10,6 +10,9 @@ use common::{
  };
  use common_ecs::{Job, Origin, Phase, System};

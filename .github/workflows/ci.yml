@@ -25,15 +25,31 @@ jobs:
         run: cargo fetch
       - name: Patch transitive deps for modern toolchains
         run: |
+          set -euo pipefail
           # veloren-weekly's transitive deps (shred, veloren-common) use APIs
           # removed from modern Rust; apply the project's toolchain-compatibility
           # patches (patches/veloren-weekly-toolchain.patch, see docs/troubleshooting.md).
-          cd ~/.cargo/git/checkouts/veloren-*/f97be34 && git apply /github/workspace/patches/veloren-weekly-toolchain.patch
-          sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as *mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' ~/.cargo/registry/src/*/shred-0.15.0/src/meta.rs
+          # Locate the veloren git checkout dynamically after `cargo fetch`: the
+          # weekly tag's rev is not fixed and multiple checkouts may coexist, so
+          # hardcoding ~/.cargo/git/checkouts/veloren-*/<rev> is fragile — that
+          # hardcoded path is exactly why the nightly job fails in CI.
+          VELOREN_SRC="$(find ~/.cargo/git/checkouts -maxdepth 8 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)"
+          if [ -z "$VELOREN_SRC" ]; then
+            echo "::error::veloren weekly checkout not found after cargo fetch" >&2
+            exit 1
+          fi
+          VELOREN_ROOT="$(cd "$(dirname "$VELOREN_SRC")/../../.." && pwd)"
+          (cd "$VELOREN_ROOT" && git apply "$GITHUB_WORKSPACE/patches/veloren-weekly-toolchain.patch")
+          SHRED_META="$(find ~/.cargo/registry/src -type f -path '*/shred-0.15.0/src/meta.rs' -print -quit)"
+          if [ -z "$SHRED_META" ]; then
+            echo "::error::shred-0.15.0/src/meta.rs not found in cargo registry" >&2
+            exit 1
+          fi
+          sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as *mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' "$SHRED_META"
       - name: Build with zero warnings (nightly)
         run: RUSTFLAGS="-D warnings" cargo +nightly build --release
       - name: Run test suite (nightly)
-        run: cargo +nightly test --release
+        run: RUSTFLAGS="-D warnings" cargo +nightly test --release
 
   docker-sandbox:
     name: Docker sandbox build & test
