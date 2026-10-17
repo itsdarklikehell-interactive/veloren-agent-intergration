@@ -1,6 +1,6 @@
 # Docker sandbox for the headless veloren-agent.
 # Builds and tests the agent in an isolated container (no host Rust toolchain needed).
-FROM rust:1.99
+FROM rust:1.82
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates pkg-config libssl-dev \

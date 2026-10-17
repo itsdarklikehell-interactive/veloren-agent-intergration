@@ -74,6 +74,15 @@ services:
         condition: service_healthy
     entrypoint: ["./target/release/veloren-agent"]
     command: ["--server", "veloren-server:14004"]
+    healthcheck:
+      # Smoke test: the release binary must start cleanly. Real work
+      # (connecting to the game server) is gated on veloren-server's own
+      # healthcheck via depends_on condition: service_healthy.
+      test: ["CMD-SHELL", "./target/release/veloren-agent --help >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     volumes:
       # Airshipper assets (optional but recommended): host path from .env,
       # defaulting to the standard Airshipper profile location.
