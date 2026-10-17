@@ -12,7 +12,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     sync::mpsc,
     thread,
@@ -34,6 +34,9 @@ use vek::Vec2;
 pub struct MockServer {
     addr: SocketAddr,
     _accept_thread: Option<std::thread::JoinHandle<()>>,
+    /// Health reported in observations, shared so `with_health` overrides
+    /// apply to connections accepted after the override is set.
+    health: Arc<Mutex<HealthObs>>,
 }
 
 impl MockServer {
@@ -41,19 +44,30 @@ impl MockServer {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let limit = Arc::new(AtomicU64::new(close_after));
+        let health = Arc::new(Mutex::new(HealthObs { current: 100.0, maximum: 100.0, is_dead: false }));
+        let accept_health = Arc::clone(&health);
         let accept_thread = thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let limit = Arc::clone(&limit);
-                let _ = thread::spawn(move || handle_connection(stream, limit));
+                let health = Arc::clone(&accept_health);
+                let _ = thread::spawn(move || {
+                    handle_connection(stream, limit, health.lock().unwrap().clone())
+                });
             }
         });
-        Ok(Self { addr, _accept_thread: Some(accept_thread) })
+        Ok(Self { addr, _accept_thread: Some(accept_thread), health })
+    }
+
+    /// Override the `health` field the server reports in observations.
+    pub fn with_health(self, health: HealthObs) -> Self {
+        *self.health.lock().unwrap() = health;
+        self
     }
 
     pub fn addr(&self) -> SocketAddr { self.addr }
 }
 
-fn handle_connection(stream: TcpStream, limit: Arc<AtomicU64>) {
+fn handle_connection(stream: TcpStream, limit: Arc<AtomicU64>, health: HealthObs) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -73,9 +87,9 @@ fn handle_connection(stream: TcpStream, limit: Arc<AtomicU64>) {
                 ticks += 1;
                 let obs = format!(
                     "{{\"type\":\"observation\",\"tick\":{},\"position\":[10.0,20.0,5.0],\
-                     \"health\":{{\"current\":100.0,\"maximum\":100.0,\"is_dead\":false}},\
+                     \"health\":{{\"current\":{},\"maximum\":{},\"is_dead\":{}}},\
                      \"chat\":[],\"events\":[]}}",
-                    ticks
+                    ticks, health.current, health.maximum, health.is_dead
                 );
                 write_line(&mut writer, &obs);
                 if ticks >= limit.load(Ordering::Relaxed) {
@@ -221,6 +235,52 @@ fn is_well_formed_observation(v: &Value) -> bool {
         && v.get("position").and_then(Value::as_array).is_some()
 }
 
+/// Drive `run_agent` against `conn`: feed `cmds` on the command channel
+/// (in send order), then a `quit` command, returning the outcome plus
+/// captured stdout. The channel is FIFO and `quit` is sent last, so every
+/// preceding command is processed before the agent exits.
+fn drive_agent<C: GameConnection>(
+    conn: &mut C,
+    cmds: &[&str],
+    timeout: Duration,
+) -> (AgentOutcome, String) {
+    let (tx, rx) = mpsc::channel::<String>();
+    let owned: Vec<String> = cmds.iter().map(|s| (*s).to_string()).collect();
+    {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            for cmd in owned {
+                let _ = tx.send(cmd);
+                thread::sleep(Duration::from_millis(1));
+            }
+            // Give the agent time to drain the commands and tick at least
+            // once before we ask it to quit, so the run produces
+            // observations to inspect. (The agent's clock ticks at ~60Hz.)
+            thread::sleep(Duration::from_millis(150));
+            let _ = tx.send(r#"{"cmd":"quit"}"#.to_string());
+        });
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let outcome = run_agent(conn, &mut out, &rx, timeout, None);
+    (outcome, String::from_utf8_lossy(&out).to_string())
+}
+
+fn assert_no_patrol_events(observations: &[Value]) {
+    for obs in observations {
+        let events = match obs.get("events").and_then(Value::as_array) {
+            Some(e) => e,
+            None => continue,
+        };
+        for event in events {
+            let Some(text) = event.as_str() else { continue };
+            assert!(
+                !text.contains("patrol") && !text.contains("unreachable"),
+                "unexpected patrol event while patrol is disabled: {text}"
+            );
+        }
+    }
+}
+
 // -------- tests ----------------------------------------------------------
 
 #[test]
@@ -294,4 +354,160 @@ fn test_connect_retry_waits_for_server() {
     let conn = connect_with_retry(&connector, 10, Duration::from_millis(5)).unwrap();
     assert!(conn.registered(), "connected session should be registered");
     assert_eq!(connector.attempts(), 3, "should have retried until the server accepted");
+}
+
+#[test]
+fn test_reconnect_after_repeated_connection_loss() {
+    // Two lossy servers (close after 2 ticks each) must each be reported as
+    // ConnectionLost, and reconnecting to a persistent server must resume
+    // cleanly: registered, observations flowing, clean quit.
+    let lossy_1 = MockServer::bind(2).unwrap();
+    let lossy_2 = MockServer::bind(2).unwrap();
+    let persistent = MockServer::bind(u64::MAX).unwrap();
+
+    let connector = MockConnector::new(lossy_1.addr());
+    let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+    let (_tx, rx) = mpsc::channel();
+    let mut out: Vec<u8> = Vec::new();
+    assert_eq!(
+        run_agent(&mut conn, &mut out, &rx, Duration::from_secs(10), None),
+        AgentOutcome::ConnectionLost,
+        "first lossy server must be reported as connection lost"
+    );
+
+    let connector = MockConnector::new(lossy_2.addr());
+    let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+    let (_tx, rx) = mpsc::channel();
+    let mut out: Vec<u8> = Vec::new();
+    assert_eq!(
+        run_agent(&mut conn, &mut out, &rx, Duration::from_secs(10), None),
+        AgentOutcome::ConnectionLost,
+        "second lossy server must be reported as connection lost"
+    );
+
+    let connector = MockConnector::new(persistent.addr());
+    let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+    assert!(conn.registered(), "reconnected agent should be registered");
+    let (tx, rx) = mpsc::channel();
+    quit_after(Duration::from_millis(100), &tx);
+    let mut out: Vec<u8> = Vec::new();
+    assert_eq!(
+        run_agent(&mut conn, &mut out, &rx, Duration::from_secs(10), None),
+        AgentOutcome::Quit,
+        "reconnected agent should quit cleanly"
+    );
+    let observations = parse_observations(&String::from_utf8_lossy(&out));
+    assert!(!observations.is_empty(), "reconnected agent should emit observations");
+    assert!(
+        observations.iter().any(is_well_formed_observation),
+        "expected a well-formed observation after reconnect; got {observations:?}"
+    );
+}
+
+#[test]
+fn test_malformed_commands_are_skipped() {
+    // Invalid JSON, wrong field types, unknown commands and empty lines must
+    // be skipped (logged, not fatal): the agent keeps ticking and quits
+    // cleanly once a valid command arrives.
+    let server = MockServer::bind(u64::MAX).unwrap();
+    let connector = MockConnector::new(server.addr());
+    let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+    assert!(conn.registered());
+
+    let cmds = [
+        "{not valid json",
+        r#"{"cmd":"move","x":"not-a-number","y":1}"#,
+        r#"{"cmd":"bogus"}"#,
+        r#"{"cmd":"patrol","waypoints":"not-an-array"}"#,
+        "",
+        r#"{"cmd":null}"#,
+    ];
+    let (outcome, output) = drive_agent(&mut conn, &cmds, Duration::from_secs(10));
+    assert_eq!(
+        outcome,
+        AgentOutcome::Quit,
+        "agent must survive malformed commands and quit cleanly"
+    );
+    let observations = parse_observations(&output);
+    assert!(!observations.is_empty(), "expected observations despite malformed input");
+    assert!(
+        observations.iter().any(is_well_formed_observation),
+        "expected a well-formed observation; got {output}"
+    );
+}
+
+#[test]
+fn test_patrol_empty_waypoints_disable_patrol() {
+    // An empty waypoint list disables patrol: no patrol or unreachable events
+    // may be emitted, and the agent still quits cleanly.
+    let server = MockServer::bind(u64::MAX).unwrap();
+    let connector = MockConnector::new(server.addr());
+    let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+
+    let cmds = [r#"{"cmd":"patrol","waypoints":[]}"#];
+    let (outcome, output) = drive_agent(&mut conn, &cmds, Duration::from_secs(10));
+    assert_eq!(outcome, AgentOutcome::Quit);
+    let observations = parse_observations(&output);
+    assert!(!observations.is_empty());
+    assert_no_patrol_events(&observations);
+}
+
+#[test]
+fn test_patrol_empty_waypoints_stop_active_patrol() {
+    // Empty waypoints received while patrolling must stop patrol before the
+    // 180-tick stuck threshold, so no "unreachable" event is ever emitted.
+    let server = MockServer::bind(u64::MAX).unwrap();
+    let connector = MockConnector::new(server.addr());
+    let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+
+    let cmds = [
+        r#"{"cmd":"patrol","waypoints":[[999.0,999.0]]}"#,
+        r#"{"cmd":"patrol","waypoints":[]}"#,
+    ];
+    let (outcome, output) = drive_agent(&mut conn, &cmds, Duration::from_secs(10));
+    assert_eq!(outcome, AgentOutcome::Quit);
+    let observations = parse_observations(&output);
+    assert!(!observations.is_empty());
+    assert_no_patrol_events(&observations);
+}
+
+#[test]
+fn test_observation_health_extremes_round_trip() {
+    // Extreme health values (death, over-maximum, zero maximum) must survive
+    // the observation pipeline unchanged.
+    let cases = [
+        (
+            MockServer::bind(u64::MAX).unwrap().with_health(HealthObs { current: 0.0, maximum: 100.0, is_dead: true }),
+            HealthObs { current: 0.0, maximum: 100.0, is_dead: true },
+        ),
+        (
+            MockServer::bind(u64::MAX).unwrap().with_health(HealthObs { current: 150.0, maximum: 100.0, is_dead: false }),
+            HealthObs { current: 150.0, maximum: 100.0, is_dead: false },
+        ),
+        (
+            MockServer::bind(u64::MAX).unwrap().with_health(HealthObs { current: 0.0, maximum: 0.0, is_dead: false }),
+            HealthObs { current: 0.0, maximum: 0.0, is_dead: false },
+        ),
+    ];
+    for (server, expected) in cases {
+        let connector = MockConnector::new(server.addr());
+        let mut conn = connect_with_retry(&connector, 5, Duration::from_millis(10)).unwrap();
+        let (tx, rx) = mpsc::channel();
+        quit_after(Duration::from_millis(50), &tx);
+        let mut out: Vec<u8> = Vec::new();
+        assert_eq!(
+            run_agent(&mut conn, &mut out, &rx, Duration::from_secs(10), None),
+            AgentOutcome::Quit
+        );
+        let observations = parse_observations(&String::from_utf8_lossy(&out));
+        assert!(
+            observations.iter().any(|obs| {
+                let Some(health) = obs.get("health") else { return false };
+                health.get("current").and_then(Value::as_f64) == Some(expected.current as f64)
+                    && health.get("maximum").and_then(Value::as_f64) == Some(expected.maximum as f64)
+                    && health.get("is_dead").and_then(Value::as_bool) == Some(expected.is_dead)
+            }),
+            "expected health {expected:?} in observations; got {observations:?}"
+        );
+    }
 }
