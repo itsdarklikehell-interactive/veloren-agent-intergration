@@ -5,6 +5,25 @@ All notable changes to the veloren-agent project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-10-18
+
+### Added
+
+- Autonomous goal-oriented behavior system: `explore`/`gather`/`avoid-danger` agent behaviors with patrol integration — [bbd7c80][], [e24aa79][], [5eb9694][]
+- Viewport API documentation: camera controls and viewport endpoints — [103a35e][]
+- Deploy runbook: Docker Compose deployment and operations — [87ab548][], [61a5197][]
+
+### Changed
+
+- `docs/docker-compose.md`: consolidated deploy runbook and service docs
+- `README.md`: behavior system, viewport, and deploy documentation
+
+### Fixed
+
+- Security audit: dashboard auth controls re-verified at HEAD; 401 responses now prompt for key — [0b3f343][], [0f00f74][]
+- `src/behavior.rs`: `obstacle_avoidance` normalization and `dead_code` allowances — [5eb9694][]
+- `agent-behavior` compile fixes: `specs::Join` import, entity iteration, Vec2 normalization, f32 division — [e24aa79][]
+
 ## [1.0.0] — 2026-10-17
 
 First stable release. A headless Rust agent frontend that drives a local
@@ -88,3 +107,11 @@ server lifecycle auto-recovery, Prometheus metrics, Flask dashboard, and CI.
 [c87a44c]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/c87a44c
 [68e763b]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/68e763b
 [9863847]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/9863847
+[bbd7c80]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/bbd7c80
+[e24aa79]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/e24aa79
+[5eb9694]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/5eb9694
+[103a35e]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/103a35e
+[87ab548]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/87ab548
+[61a5197]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/61a5197
+[0b3f343]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/0b3f343
+[0f00f74]: https://github.com/itsdarklikehell/veloren-agent-intergration/commit/0f00f74
