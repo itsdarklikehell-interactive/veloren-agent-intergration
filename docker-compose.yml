@@ -15,7 +15,7 @@
 #
 # Credentials are never committed: pass them via .env (gitignored) which is
 # loaded by env_file. The dashboard auto-generates DASHBOARD_API_KEY at startup
-# if it is unset (printed to container logs).
+# (never logged; clients supply it per request via the X-API-Key header).
 #
 # Two ways to provide the Veloren dedicated server:
 #   * build (default below): Dockerfile.server builds veloren-server from the
@@ -112,6 +112,8 @@ services:
     restart: unless-stopped
     networks:
       - veloren-net
+    # DASHBOARD_API_KEY is injected via .env at runtime; never baked into the
+    # image (see .dockerignore) and never logged by web/app.py at startup.
 
 networks:
   veloren-net:

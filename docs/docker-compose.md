@@ -70,6 +70,19 @@ docker compose up --build
 The dashboard UI is at `http://localhost:5000`; the live viewport is at
 `http://localhost:5000/viewport`.
 
+## Health checks
+
+| Service | Check |
+|---|---|
+| `veloren-server` | TCP port 14004 reachable from inside the container |
+| `veloren-agent` | `./target/release/veloren-agent --help` exits 0 (release binary starts) |
+| `veloren-dashboard` | none (Flask process — watch `docker compose logs veloren-dashboard`) |
+
+The agent's real work — joining the game world — is ordered after the server
+via `depends_on: veloren-server` with `condition: service_healthy`, so the
+agent container never starts before the world is ready. Mark the agent
+healthy in `docker compose ps` before expecting observations.
+
 ## Stop the stack
 
 ```bash
