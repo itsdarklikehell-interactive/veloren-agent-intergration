@@ -125,3 +125,49 @@ echo '{"cmd":"quit"}' | ./target/release/veloren-agent --character HERMES
 - The observation chat buffer is a ring buffer of the last 50 messages.
 - Position and health are `null` until the player has entered the game world.
 - `presence` is `None` during character selection/loading; becomes `Some(Character(...))` once in-game.
+
+## Prometheus Metrics
+
+### `GET /metrics`
+
+Prometheus text exposition format (v0.0.4). Public endpoint — no dashboard API key required; intended as a Prometheus scrape target.
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `agent_observations_total` | counter | — | Total agent observations received and persisted to SQLite |
+| `agent_tick_latency_seconds` | gauge | `stat="min"\|"avg"\|"max"` | Tick processing latency baseline in seconds, computed over the last 10,000 persisted tick latencies |
+| `server_connected` | gauge | — | `1` if the game server port (`VELOREN_PORT`, default 14004) accepts TCP connections, else `0` |
+| `agent_uptime_seconds` | gauge | — | Seconds the agent process has been running in this dashboard session; `0` when stopped |
+| `last_observation_tick` | gauge | — | Tick number of the most recent agent observation |
+| `dashboard_requests_total` | counter | — | Total HTTP requests served by the dashboard |
+
+Tick processing latency is measured per observation in the agent reader thread (decode → parse → persist) and stored in the `tick_latency` table of `.hermes/artifacts/dashboard.db`, so the min/avg/max baseline survives dashboard restarts.
+
+### Prometheus scrape config
+
+Add to `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: veloren-dashboard
+    scrape_interval: 15s
+    # /metrics is public; no authorization header needed
+    static_configs:
+      - targets: ["127.0.0.1:5000"]
+```
+
+### Example queries
+
+```promql
+# Latest observed game tick
+last_observation_tick
+
+# Is the game server port reachable right now?
+server_connected
+
+# Average tick-processing latency over the last hour
+avg_over_time(agent_tick_latency_seconds{stat="avg"}[1h])
+
+# Dashboard request rate
+rate(dashboard_requests_total[5m])
+```

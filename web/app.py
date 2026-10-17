@@ -6,6 +6,7 @@ are delivered by polling JSON endpoints (no WebSockets):
 
   GET /                dashboard page (public)
   GET /api/health      uptime, version, last observation tick (public)
+  GET /metrics         Prometheus-format metrics (public scrape target)
   GET /api/status      server tmux session, port 14004, agent running, registered
   GET /api/server-logs tmux capture-pane output of the 'veloren-server' session
   GET /api/agent-logs  raw agent stdout/stderr tail
@@ -18,7 +19,7 @@ are delivered by polling JSON endpoints (no WebSockets):
 
 Authentication
 --------------
-Every endpoint except GET / and GET /api/health requires the dashboard API key.
+Every endpoint except GET /, GET /api/health and GET /metrics requires the dashboard API key.
 Send it as an `X-API-Key` header, or as `Authorization: Bearer <key>`, or as
 `Authorization: Basic user:<key>`. The key is taken from DASHBOARD_API_KEY in
 the environment/.env; if unset, a random key is generated at startup and printed
@@ -61,7 +62,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, Response
 
 # --------------------------------------------------------------------------- paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -113,6 +114,14 @@ CREATE TABLE IF NOT EXISTS agent_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_logs_logged_at ON agent_logs(logged_at);
 
+CREATE TABLE IF NOT EXISTS tick_latency (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick INTEGER NOT NULL,
+    duration_seconds REAL NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tick_latency_tick ON tick_latency(tick);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -123,6 +132,8 @@ CREATE TABLE IF NOT EXISTS meta (
 _state_lock = threading.RLock()
 _agent_proc: subprocess.Popen | None = None
 _db_conn: sqlite3.Connection | None = None
+_agent_start_time: float | None = None
+_requests_total = 0
 
 
 def db_connect() -> sqlite3.Connection:
@@ -187,6 +198,21 @@ def append_observation(obs: dict, raw: str) -> None:
             )
             _db_conn.commit()
         except sqlite3.Error:  # noqa: BLE001 - persistence must never break the reader
+            pass
+
+
+def record_tick_latency(tick: int, duration_seconds: float) -> None:
+    """Persist one tick's processing duration for baseline min/avg/max metrics."""
+    if _db_conn is None:
+        return
+    with _state_lock:
+        try:
+            _db_conn.execute(
+                "INSERT INTO tick_latency (tick, duration_seconds, recorded_at) VALUES (?, ?, ?)",
+                (tick, duration_seconds, now_iso()),
+            )
+            _db_conn.commit()
+        except sqlite3.Error:  # noqa: BLE001 - metrics must never break the reader
             pass
 
 
@@ -264,6 +290,7 @@ def _append_agent(line: str) -> None:
 def _reader(pipe) -> None:
     """Read agent stdout line by line; stash raw lines + parsed observations."""
     for raw in iter(pipe.readline, b""):
+        start = time.perf_counter()
         try:
             line = raw.decode("utf-8", errors="replace").rstrip("\n")
         except Exception:
@@ -271,12 +298,17 @@ def _reader(pipe) -> None:
         if not line:
             continue
         _append_agent(line)
+        tick = None
         try:
             obs = json.loads(line)
             if isinstance(obs, dict):
                 append_observation(obs, line)
+                tick = obs.get("tick")
         except json.JSONDecodeError:
             pass  # non-JSON noise on stdout/stderr
+        duration = time.perf_counter() - start
+        if isinstance(tick, int):
+            record_tick_latency(tick, duration)
 
 
 def agent_running() -> bool:
@@ -295,7 +327,7 @@ def latest_observation():
 
 
 def start_agent() -> dict:
-    global _agent_proc
+    global _agent_proc, _agent_start_time
     with _state_lock:
         if agent_running():
             return {"ok": True, "already": True}
@@ -317,16 +349,18 @@ def start_agent() -> dict:
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
         _agent_proc = proc
+        _agent_start_time = time.monotonic()
         thread = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)
         thread.start()
         return {"ok": True, "pid": proc.pid}
 
 
 def stop_agent() -> dict:
-    global _agent_proc
+    global _agent_proc, _agent_start_time
     with _state_lock:
         proc = _agent_proc
         _agent_proc = None
+        _agent_start_time = None
     if proc is None:
         return {"ok": True, "already": True}
     try:
@@ -386,6 +420,7 @@ def _require_api_key():
     if (
         request.path in ("/", "/favicon.ico")
         or request.path == "/api/health"
+        or request.path == "/metrics"
         or request.path.startswith("/static/")
     ):
         return None
@@ -396,6 +431,15 @@ def _require_api_key():
             401,
             {"WWW-Authenticate": 'Bearer realm="veloren-dashboard"'},
         )
+
+
+@app.after_request
+def _count_requests(response):
+    """Count every served request for dashboard_requests_total."""
+    global _requests_total
+    with _state_lock:
+        _requests_total += 1
+    return response
 
 
 @app.get("/")
@@ -420,6 +464,76 @@ def health():
             "last_observation_tick": last_tick,
         }
     )
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus text-format metrics; scrape target for Prometheus."""
+    with _state_lock:
+        requests_total = _requests_total
+        agent_start = _agent_start_time
+
+    connected = 1 if port_listening() else 0
+
+    obs_total = 0
+    last_tick = None
+    durations: list[float] = []
+    if _db_conn is not None:
+        with _state_lock:
+            row = _db_conn.execute("SELECT COUNT(*) AS n FROM observations").fetchone()
+            obs_total = row["n"] if row else 0
+            row = _db_conn.execute("SELECT MAX(tick) AS m FROM observations").fetchone()
+            last_tick = row["m"] if row else None
+            rows = _db_conn.execute(
+                "SELECT duration_seconds FROM tick_latency ORDER BY id DESC LIMIT 10000"
+            ).fetchall()
+            durations = [row["duration_seconds"] for row in rows]
+
+    uptime = 0.0
+    if agent_start is not None:
+        uptime = max(0.0, time.monotonic() - agent_start)
+
+    lines: list[str] = []
+
+    def metric(name: str, documentation: str, typ: str) -> None:
+        lines.append(f"# HELP {name} {documentation}")
+        lines.append(f"# TYPE {name} {typ}")
+
+    metric(
+        "agent_observations_total",
+        "Total number of agent observations received and persisted",
+        "counter",
+    )
+    lines.append(f"agent_observations_total {obs_total}")
+
+    metric(
+        "agent_tick_latency_seconds",
+        "Tick processing latency baseline in seconds (min/avg/max over persisted samples)",
+        "gauge",
+    )
+    if durations:
+        lines.append(f'agent_tick_latency_seconds{{stat="min"}} {min(durations):.6f}')
+        lines.append(f'agent_tick_latency_seconds{{stat="avg"}} {sum(durations) / len(durations):.6f}')
+        lines.append(f'agent_tick_latency_seconds{{stat="max"}} {max(durations):.6f}')
+    else:
+        lines.append('agent_tick_latency_seconds{stat="min"} 0')
+        lines.append('agent_tick_latency_seconds{stat="avg"} 0')
+        lines.append('agent_tick_latency_seconds{stat="max"} 0')
+
+    metric("server_connected", "Whether the game server port is accepting connections (1 = yes, 0 = no)", "gauge")
+    lines.append(f"server_connected {connected}")
+
+    metric("agent_uptime_seconds", "Seconds the agent process has been running in this dashboard session (0 when stopped)", "gauge")
+    lines.append(f"agent_uptime_seconds {uptime:.3f}")
+
+    metric("last_observation_tick", "Tick number of the most recently received agent observation", "gauge")
+    lines.append(f"last_observation_tick {last_tick if last_tick is not None else 0}")
+
+    metric("dashboard_requests_total", "Total number of HTTP requests served by the dashboard", "counter")
+    lines.append(f"dashboard_requests_total {requests_total}")
+
+    body = "\n".join(lines) + "\n"
+    return Response(body, content_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.get("/api/status")
@@ -557,7 +671,7 @@ if __name__ == "__main__":
     print(f"  Listening on http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
     print(
         f"  API key: {DASHBOARD_API_KEY}  "
-        f"(set DASHBOARD_API_KEY to override; required on all API endpoints except GET / and GET /api/health)"
+        f"(set DASHBOARD_API_KEY to override; required on all API endpoints except GET /, GET /api/health and GET /metrics)"
     )
     print(f"  Persistence: {DB_PATH}")
     _serve(DASHBOARD_HOST, DASHBOARD_PORT)
