@@ -35,6 +35,13 @@ pub(crate) const NEARBY_ENTITY_RADIUS: f32 = 8.0;
 /// target and stops moving toward it.
 const GATHER_ARRIVE_DIST: f32 = 1.0;
 
+/// Distance (world units) within which an entity counts as high-threat and
+/// the agent stops closing to stand its ground and attack.
+const COMBAT_ATTACK_RANGE: f32 = 2.0;
+
+/// Distance (world units) beyond which an entity is only a low threat.
+const LOW_THREAT_DIST: f32 = 5.0;
+
 /// Behavior goal the agent is currently pursuing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Goal {
@@ -43,17 +50,55 @@ pub enum Goal {
     Explore,
     /// Move toward nearby entities (resources, items) to gather them.
     Gather,
+    /// Engage the highest-threat nearby hostile entity in combat.
+    Combat,
     /// Move away from threats because health is low (or the agent is dead).
     AvoidDanger,
 }
 
 impl Goal {
-    /// Priority used by action selection; higher wins.
+    /// Priority used by action selection; higher wins. Fleeing low-health
+    /// danger outranks combat, which outranks gathering and exploration.
     pub fn priority(self) -> u8 {
         match self {
-            Goal::AvoidDanger => 3,
+            Goal::AvoidDanger => 4,
+            Goal::Combat => 3,
             Goal::Gather => 2,
             Goal::Explore => 1,
+        }
+    }
+}
+
+/// Threat level of a nearby entity, used to prioritize combat targets.
+/// Assessed from distance: closer entities are more immediately threatening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreatLevel {
+    /// Distant entity: little immediate threat.
+    Low,
+    /// Closing entity: moderate threat.
+    Medium,
+    /// Entity within striking distance: high threat.
+    High,
+}
+
+impl ThreatLevel {
+    /// Assess the threat posed by an entity at `dist` world units.
+    pub fn from_distance(dist: f32) -> Self {
+        if dist < COMBAT_ATTACK_RANGE {
+            ThreatLevel::High
+        } else if dist < LOW_THREAT_DIST {
+            ThreatLevel::Medium
+        } else {
+            ThreatLevel::Low
+        }
+    }
+
+    /// Numeric weight for comparing threat (higher = more threatening).
+    pub fn weight(self) -> u8 {
+        match self {
+            ThreatLevel::Low => 1,
+            ThreatLevel::Medium => 2,
+            ThreatLevel::High => 3,
         }
     }
 }
@@ -75,6 +120,10 @@ pub struct BehaviorAction {
     pub goal: Goal,
     pub move_dir: Vec2<f32>,
     pub priority: u8,
+    /// World position of the entity the agent should attack this tick.
+    /// `Some` only for the `Combat` goal; the caller is responsible for
+    /// issuing the actual attack input against this target.
+    pub attack_target: Option<[f32; 3]>,
 }
 
 /// State of the autonomous behavior system.
@@ -122,8 +171,20 @@ impl BehaviorSystem {
         let is_dead = inputs.health.as_ref().map(|h| h.is_dead).unwrap_or(false);
         let has_entities = !inputs.nearby_entities.is_empty();
 
+        // Whether a high-threat (close) entity is present; threat rises as
+        // an entity approaches, so proximity is the threat signal we have.
+        let high_threat_present = inputs.position.map(|p| {
+            let cur = Vec2::new(p[0], p[1]);
+            inputs.nearby_entities.iter().any(|e| {
+                dist2(cur, Vec2::new(e[0], e[1])).sqrt() <= COMBAT_ATTACK_RANGE
+            })
+        }).unwrap_or(false);
+
         let new_goal = if is_dead || health_ratio < HEALTH_LOW_RATIO {
             Goal::AvoidDanger
+        } else if high_threat_present {
+            // A high-threat (close) entity is present: engage it in combat.
+            Goal::Combat
         } else if has_entities && self.gather_cooldown == 0 {
             Goal::Gather
         } else {
@@ -145,21 +206,23 @@ impl BehaviorSystem {
     /// Convert a goal into a movement steering direction.
     pub fn action_for(&mut self, goal: Goal, inputs: &BehaviorInputs) -> BehaviorAction {
         let priority = goal.priority();
-        let move_dir = match goal {
-            Goal::AvoidDanger => self.avoid_action(inputs),
+        let (move_dir, attack_target) = match goal {
+            Goal::AvoidDanger => (self.avoid_action(inputs), None),
             Goal::Gather => {
                 if self.gather_cooldown > 0 {
-                    Vec2::zero()
+                    (Vec2::zero(), None)
                 } else {
-                    self.gather_action(inputs)
+                    (self.gather_action(inputs), None)
                 }
             }
-            Goal::Explore => inputs.patrol_steering,
+            Goal::Explore => (inputs.patrol_steering, None),
+            Goal::Combat => self.combat_action(inputs),
         };
         BehaviorAction {
             goal,
             move_dir,
             priority,
+            attack_target,
         }
     }
 
@@ -198,6 +261,27 @@ impl BehaviorSystem {
             normalize(to_entity)
         }
     }
+
+    /// Engage the highest-threat nearby entity: close to attack range, then
+    /// stand ground to attack. Returns the movement direction and the entity
+    /// position the caller should attack.
+    fn combat_action(&self, inputs: &BehaviorInputs) -> (Vec2<f32>, Option<[f32; 3]>) {
+        let Some(cur) = inputs.position.map(|p| Vec2::new(p[0], p[1])) else {
+            return (Vec2::zero(), None);
+        };
+        let Some((target, _threat, dist)) = combat_target(cur, &inputs.nearby_entities) else {
+            return (Vec2::zero(), None);
+        };
+        let attack_target = Some([target[0], target[1], target[2]]);
+        if dist <= COMBAT_ATTACK_RANGE {
+            (Vec2::zero(), attack_target) // in range: stand and attack
+        } else {
+            (
+                normalize(Vec2::new(target[0] - cur[0], target[1] - cur[1])),
+                attack_target,
+            ) // close in
+        }
+    }
 }
 
 /// Position of the nearest entity to `cur`, using squared 2-D distance.
@@ -224,6 +308,27 @@ fn normalize(v: Vec2<f32>) -> Vec2<f32> {
     } else {
         Vec2::zero()
     }
+}
+
+/// The highest-threat (closest) entity to `cur`, with its threat level and
+/// distance. Ties in threat level are broken by closest distance.
+fn combat_target(
+    cur: Vec2<f32>,
+    entities: &[[f32; 3]],
+) -> Option<([f32; 3], ThreatLevel, f32)> {
+    entities
+        .iter()
+        .map(|e| {
+            let pos = Vec2::new(e[0], e[1]);
+            let dist = dist2(cur, pos).sqrt();
+            let threat = ThreatLevel::from_distance(dist);
+            (*e, threat, dist)
+        })
+        .max_by(|a, b| {
+            a.1.weight()
+                .cmp(&b.1.weight())
+                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal))
+        })
 }
 
 #[cfg(test)]
@@ -382,5 +487,154 @@ mod tests {
         let entities = vec![[10.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
         let nearest = nearest_entity(cur, &entities).unwrap();
         assert_eq!(nearest, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn health_zero_without_dead_flag_is_low_health() {
+        // current == 0 but is_dead == false still ratios below the threshold.
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(0.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![],
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::AvoidDanger);
+    }
+
+    #[test]
+    fn health_at_threshold_is_not_low() {
+        // A ratio exactly at HEALTH_LOW_RATIO (0.30) is not below it.
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(30.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![],
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::Explore);
+    }
+
+    #[test]
+    fn health_above_maximum_is_not_low() {
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(150.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![],
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::Explore);
+    }
+
+    #[test]
+    fn health_maximum_zero_defaults_to_healthy() {
+        // maximum == 0 would divide by zero; select_goal treats it as
+        // healthy instead of panicking or selecting AvoidDanger.
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(50.0, 0.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![],
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::Explore);
+    }
+
+    #[test]
+    fn dead_at_maximum_health_avoids_danger() {
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(100.0, 100.0, true)),
+            Some([0.0, 0.0, 0.0]),
+            vec![],
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::AvoidDanger);
+    }
+
+    #[test]
+    fn close_hostile_selects_combat() {
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(100.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[1.0, 0.0, 0.0]], // within attack range -> high threat
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::Combat);
+    }
+
+    #[test]
+    fn distant_entity_selects_gather_not_combat() {
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(100.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[5.0, 0.0, 0.0]], // beyond attack range
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::Gather);
+    }
+
+    #[test]
+    fn low_health_flees_even_with_hostiles() {
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(20.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[1.0, 0.0, 0.0]], // high-threat hostile present
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::AvoidDanger);
+    }
+
+    #[test]
+    fn combat_priority_above_gather_below_avoid() {
+        assert!(Goal::Combat.priority() > Goal::Gather.priority());
+        assert!(Goal::Combat.priority() < Goal::AvoidDanger.priority());
+    }
+
+    #[test]
+    fn combat_picks_closest_highest_threat_target() {
+        // Entity at distance 1.0 (high threat) and one at 5.0 (medium). Combat
+        // must target the closest (highest threat) entity.
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(100.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[5.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            Vec2::zero(),
+        );
+        assert_eq!(b.select_goal(&inputs), Goal::Combat);
+        let action = b.action_for(Goal::Combat, &inputs);
+        assert_eq!(action.attack_target, Some([1.0, 0.0, 0.0]));
+        // In attack range: stand ground and attack (no movement).
+        assert_eq!(action.move_dir, Vec2::zero());
+    }
+
+    #[test]
+    fn combat_approaches_out_of_range_target() {
+        let mut b = BehaviorSystem::default();
+        let inputs = inputs(
+            Some(health(100.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[5.0, 0.0, 0.0]],
+            Vec2::zero(),
+        );
+        let action = b.action_for(Goal::Combat, &inputs);
+        assert_eq!(action.attack_target, Some([5.0, 0.0, 0.0]));
+        // Out of range: steer +X toward the target.
+        assert!((action.move_dir.x - 1.0).abs() < 0.001);
+        assert!(action.move_dir.y.abs() < 0.001);
+    }
+
+    #[test]
+    fn threat_level_rises_as_entity_approaches() {
+        assert_eq!(ThreatLevel::from_distance(0.5), ThreatLevel::High);
+        assert_eq!(ThreatLevel::from_distance(3.0), ThreatLevel::Medium);
+        assert_eq!(ThreatLevel::from_distance(9.0), ThreatLevel::Low);
+        assert!(ThreatLevel::High.weight() > ThreatLevel::Medium.weight());
+        assert!(ThreatLevel::Medium.weight() > ThreatLevel::Low.weight());
     }
 }
