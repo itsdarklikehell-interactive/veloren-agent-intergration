@@ -1,0 +1,10 @@
+# R&D Agent Cron Schedule
+# Installed via: crontab .hermes/cron/rd-agent-cron
+#
+# Every Monday at 8 AM: Check GitHub and Linear for unassigned or prioritized
+# R&D tasks. Spin up parallel subagents to research competing architectural
+# solutions for the highest priority task, aggregate outputs into a markdown
+# research report at docs/research/, and post a notification summary.
+
+# Cron format: minute hour day month weekday command
+0 8 * * 1 /home/rizzo/Work/veloren-agent-intergration/pipeline/cron-weekly-sync.sh >> /home/rizzo/Work/veloren-agent-intergration/.hermes/logs/cron.log 2>&1

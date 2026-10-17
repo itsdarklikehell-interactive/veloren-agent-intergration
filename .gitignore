@@ -24,3 +24,7 @@ Thumbs.db
 
 # Environment variables (never commit real credentials)
 .env
+
+# Hermes agent runtime
+.hermes/logs/
+.hermes/artifacts/
