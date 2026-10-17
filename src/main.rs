@@ -194,7 +194,6 @@ fn main() {
     let mut out = stdout.lock();
 
     // Pending movement direction (set by commands or patrol AI, applied each tick)
-    let mut move_dir = Vec2::zero();
     let mut pending_chat: Option<String> = None;
     let mut last_sent_chat: Option<String> = None;
     let mut pending_command: Option<(String, Vec<String>)> = None;
@@ -249,7 +248,7 @@ fn main() {
 
         // Movement resets every tick. Patrol sets a base steering direction
         // below; an explicit {"cmd":"move"} command overrides it when commands drain.
-        move_dir = Vec2::zero();
+        let mut move_dir = Vec2::zero();
 
         // --- Patrol steering: walk toward the current waypoint ----------
         if patrol_active && patrol_index < patrol_waypoints.len() {
@@ -257,15 +256,16 @@ fn main() {
                 let target = Vec2::new(patrol_waypoints[patrol_index][0], patrol_waypoints[patrol_index][1]);
                 let cur = Vec2::new(pos[0], pos[1]);
                 let to_target = target - cur;
-                let dist = to_target.length();
+                let dist = (to_target.x * to_target.x + to_target.y * to_target.y).sqrt();
                 if dist < PATROL_REACH_THRESHOLD {
                     patrol_index = (patrol_index + 1) % patrol_waypoints.len();
                     eprintln!(
-                        "Patrol reached waypoint {}, heading to {}",
+                        "Patrol reached waypoint {}, heading to {:?}",
                         patrol_index, patrol_waypoints[patrol_index]
                     );
                 } else if dist > 0.001 {
-                    move_dir = to_target.normalize();
+                    let inv_len = 1.0 / dist;
+                    move_dir = Vec2::new(to_target.x * inv_len, to_target.y * inv_len);
                 }
             }
         }

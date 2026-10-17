@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 # Veloren client library — same modular frontend lib teloren uses
 veloren-client = { git = "https://gitlab.com/veloren/veloren.git", rev = "f97be347c5a7b2b4674c47aa29ff9cc63a85e486" }
-veloren-common = { git = "https://gitlab.com/veloren/veloren.git", tag = "weekly", features = ["no-assets"] }
-veloren-common-net = { git = "https://gitlab.com/veloren/veloren.git", tag = "weekly" }
+veloren-common = { git = "https://gitlab.com/veloren/veloren.git", rev = "f97be347c5a7b2b4674c47aa29ff9cc63a85e486", features = ["no-assets"] }
+veloren-common-net = { git = "https://gitlab.com/veloren/veloren.git", rev = "f97be347c5a7b2b4674c47aa29ff9cc63a85e486" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
