@@ -1,0 +1,26 @@
+# Docker build context exclusions for the Veloren Agent Integration stack.
+# Keep images small and never bake credentials or build artifacts into images.
+
+# Git
+.git/
+.gitignore
+
+# Credentials (never commit; copied locally from .env.example)
+.env
+
+# Rust build artifacts
+/target/
+Cargo.lock.old
+
+# Hermes runtime data (created at runtime by the dashboard agent)
+.hermes/logs/
+.hermes/artifacts/
+
+# Python
+__pycache__/
+*.pyc
+.web/
+
+# OS
+.DS_Store
+Thumbs.db

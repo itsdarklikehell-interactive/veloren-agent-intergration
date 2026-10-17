@@ -1,0 +1,113 @@
+# Docker Compose for the Veloren Agent Integration stack.
+#
+# Single-command deployment:
+#   1. cp .env.example .env   # fill in VELOREN_USERNAME, VELOREN_PASSWORD, VELOREN_ASSETS, DASHBOARD_API_KEY
+#   2. docker compose up --build
+#
+# Services:
+#   veloren-server   Veloren dedicated server (veloren-server-cli)
+#   veloren-agent    Headless Rust agent (builds from the root Dockerfile)
+#   veloren-dashboard Flask monitoring dashboard on http://localhost:5000
+#
+# All three services share the `veloren-net` bridge network, so the agent reaches
+# the server at `veloren-server:14004` and the dashboard reaches the agent API
+# through the published port 5000.
+#
+# Credentials are never committed: pass them via .env (gitignored) which is
+# loaded by env_file. The dashboard auto-generates DASHBOARD_API_KEY at startup
+# if it is unset (printed to container logs).
+#
+# Two ways to provide the Veloren dedicated server:
+#   * build (default below): Dockerfile.server builds veloren-server from the
+#     Veloren gitlab source with nightly Rust.
+#   * airshipper: replace the `build:` block of veloren-server with an image that
+#     contains the airshipper-downloaded veloren-server-cli, or mount the
+#     airshipper profiles directory (VELOREN_SERVER_BIN) and override the
+#     entrypoint to run `veloren-server-cli --non-interactive`.
+#
+# See docs/docker-compose.md for the full runbook.
+
+services:
+  ###############################################################################
+  # Veloren dedicated server (game world, port 14004).
+  ###############################################################################
+  veloren-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: veloren-server
+    ports:
+      - "14004:14004/tcp"
+    expose:
+      - "14004/tcp"
+    environment:
+      - VELOREN_PORT=14004
+    volumes:
+      - veloren-server-data:/var/lib/veloren/server
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/14004 && exec 3>&- && exec 3<&-'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - veloren-net
+
+  ###############################################################################
+  # Headless Veloren agent (Rust, veloren-client based).
+  # Connects to veloren-server:14004. Credentials come from .env:
+  #   VELOREN_USERNAME, VELOREN_PASSWORD, VELOREN_ASSETS, VELOREN_AGENT_CHARACTER
+  ###############################################################################
+  veloren-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: veloren-agent
+    env_file:
+      - .env
+    environment:
+      - VELOREN_PORT=14004
+      - VELOREN_ASSETS=/opt/veloren/assets
+    depends_on:
+      veloren-server:
+        condition: service_healthy
+    entrypoint: ["./target/release/veloren-agent"]
+    command: ["--server", "veloren-server:14004"]
+    volumes:
+      # Airshipper assets (optional but recommended): host path from .env,
+      # defaulting to the standard Airshipper profile location.
+      - ${VELOREN_ASSETS:-/home/rizzo/.local/share/airshipper/profiles/default/assets}:/opt/veloren/assets:ro
+    restart: unless-stopped
+    networks:
+      - veloren-net
+
+  ###############################################################################
+  # Flask dashboard (port 5000, http://localhost:5000).
+  # DASHBOARD_API_KEY comes from .env (auto-generated at startup if unset).
+  ###############################################################################
+  veloren-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: veloren-dashboard
+    env_file:
+      - .env
+    environment:
+      - VELOREN_DASHBOARD_HOST=0.0.0.0
+      - VELOREN_DASHBOARD_PORT=5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - dashboard-data:/app/.hermes/artifacts
+    restart: unless-stopped
+    networks:
+      - veloren-net
+
+networks:
+  veloren-net:
+    driver: bridge
+
+volumes:
+  veloren-server-data:
+  dashboard-data:

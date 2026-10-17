@@ -1,0 +1,54 @@
+# Builds the Veloren dedicated server binary (veloren-server) from source.
+# This is the "build" option for the veloren-server service.
+#
+# Alternative ("airshipper"): use an image that contains the airshipper-downloaded
+# veloren-server-cli binary, or mount the airshipper profiles directory and override
+# the entrypoint to run `veloren-server-cli --non-interactive`.
+FROM rust:1.99 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    pkg-config \
+    libssl-dev \
+    libxcb-render0-dev \
+    libxcb-shape0-dev \
+    libxcb-xfixes0-dev \
+    libxcb-xinerama0-dev \
+    libxcb-randr0-dev \
+    libxcb-composite0-dev \
+    libgtk-3-dev \
+    libasound2-dev \
+    libudev-dev \
+    libwayland-dev \
+    libxkbcommon-dev \
+    libfreetype6-dev \
+    fontconfig \
+    libgl1-mesa-dev \
+    libegl1-mesa-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup toolchain install nightly --profile minimal
+
+WORKDIR /src
+# Veloren dedicated server lives in the veloren gitlab repository.
+RUN git clone --depth 1 --branch master https://gitlab.com/veloren/veloren.git .
+# Build only the dedicated server binary. Adjust -p / binary name if the
+# upstream crate name changes (releases ship `veloren-server-cli` via Airshipper).
+RUN cargo +nightly build --release -p veloren-server
+
+FROM rust:1.99
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/veloren
+COPY --from=builder /src/target/release/veloren-server /usr/local/bin/veloren-server
+
+EXPOSE 14004/tcp
+
+# Flags must match what the server binary accepts; --non-interactive matches
+# scripts/start-server.sh. Port is configured via server settings (VELOREN_PORT
+# is documented for operators; wire it into settings.ron if the binary honors it).
+ENTRYPOINT ["veloren-server", "--non-interactive"]
