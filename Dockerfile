@@ -22,13 +22,18 @@ COPY . .
 # advances). These are the same patches the host build relies on
 # (see docs/troubleshooting.md). Then build/test with zero warnings
 # on nightly, the project's canonical toolchain.
+# shred-0.15 removes core::ptr::invalid_mut; the sed below replaces the call site. It matches loosely
+# because the exact line's whitespace/type-args differ across registry revisions, and an unmatched sed
+# exits 0 silently, so we grep afterwards to fail the build if the patch did not apply.
 RUN cargo fetch \
   && VELOREN_SRC="$(find /usr/local/cargo/git/checkouts -maxdepth 8 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)" \
   && if [ -z "$VELOREN_SRC" ]; then echo "veloren weekly checkout not found after cargo fetch" >&2; exit 1; fi \
   && VELOREN_ROOT="$(cd "$(dirname "$VELOREN_SRC")/../../.." && pwd)" \
   && (cd "$VELOREN_ROOT" && git apply /src/patches/veloren-weekly-toolchain.patch) \
-  && SHRED_META="$(find /usr/local/cargo/registry/src -type f -path '*/shred-0.15.0/src/meta.rs' -print -quit)" \
-  && sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as *mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' "$SHRED_META"
+  && SHRED_META="$(find /usr/local/cargo/registry/src -type f -path '*/shred-0.15*/src/meta.rs' -print -quit)" \
+  && if [ -z "$SHRED_META" ]; then echo "shred registry source not found after cargo fetch" >&2; exit 1; fi \
+  && sed -i 's|^[[:space:]]*let invalid_ptr =.*invalid_mut.*|        let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' "$SHRED_META" \
+  && grep -q 'wrapping_add(1).cast::<R>()' "$SHRED_META"
 
 # Build the agent and run the test suite inside the sandbox with zero warnings.
 RUN RUSTFLAGS="-D warnings" cargo +nightly build --release

@@ -18,6 +18,12 @@
 //!    "chat":["..."],"events":["..."]}
 //!
 //!   schema_version — observation schema version; see SCHEMA_VERSION.
+//!
+//! Server lifecycle auto-recovery:
+//!   If the connection to the server is lost (client.tick() returns an error),
+//!   the agent enters a recovery loop: it reconnects with exponential backoff,
+//!   re-authenticates, re-enters the game, and resumes ticking. The outer loop
+//!   only exits on a clean `quit` command.
 
 #![deny(unsafe_code)]
 
@@ -64,6 +70,16 @@ const PATROL_REACH_THRESHOLD: f32 = 0.5;
 
 /// Ticks between automatic chat replies (prevents reply loops/spam).
 const AUTO_RESPONSE_COOLDOWN_TICKS: u64 = 300;
+
+/// --- Server lifecycle auto-recovery configuration ---------------------
+/// Initial backoff (seconds) before the first reconnection attempt.
+const RECOVERY_INITIAL_BACKOFF_SECS: u64 = 1;
+
+/// Maximum backoff (seconds) between reconnection attempts.
+const RECOVERY_MAX_BACKOFF_SECS: u64 = 60;
+
+/// Backoff multiplier applied after each failed reconnection attempt.
+const RECOVERY_BACKOFF_MULTIPLIER: f64 = 2.0;
 
 /// CLI arguments.
 #[derive(Parser, Debug)]
@@ -154,40 +170,122 @@ fn main() {
 
     let runtime = Arc::new(Runtime::new().expect("failed to create tokio runtime"));
 
-    // --- Connect to the Veloren server ------------------------------------
-    let addr = ConnectionArgs::Tcp {
-        hostname: args.server.clone(),
-        prefer_ipv6: false,
-    };
-
     let provider = SimpleCredentialProvider {
         username: env::var("VELOREN_USERNAME").unwrap_or_else(|_| args.character.clone()),
         password: env::var("VELOREN_PASSWORD")
             .expect("VELOREN_PASSWORD must be set for authenticated servers"),
     };
 
+    // --- Outer server lifecycle auto-recovery loop ----------------------
+    // If the connection to the server is lost (client.tick() returns an error),
+    // we reconnect with exponential backoff, re-authenticate, re-enter the game,
+    // and resume the tick loop. This loop only exits on a clean quit command.
+    let mut backoff = Duration::from_secs(RECOVERY_INITIAL_BACKOFF_SECS);
+
+    'agent: loop {
+        // --- Connect to the Veloren server and enter the game -----------
+        let mut client = match connect_and_enter(&runtime, &args, &provider) {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!(
+                    "Failed to connect to server: {e}. Retrying in {}s...",
+                    backoff.as_secs()
+                );
+                std::thread::sleep(backoff);
+                backoff = next_backoff(backoff);
+                continue 'agent;
+            }
+        };
+        // Reset backoff on successful connection.
+        backoff = Duration::from_secs(RECOVERY_INITIAL_BACKOFF_SECS);
+
+        eprintln!(
+            "Connected to {} (registered: {})",
+            args.server,
+            client.registered()
+        );
+
+        // --- Run the agent tick loop ------------------------------------
+        // Returns Ok(()) on clean quit, Err(String) on connection loss.
+        match run_tick_loop(&mut client) {
+            Ok(()) => {
+                eprintln!("Agent quit cleanly.");
+                break 'agent;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Connection lost: {e}. Attempting to reconnect in {}s...",
+                    backoff.as_secs()
+                );
+                client.logout();
+                std::thread::sleep(backoff);
+                backoff = next_backoff(backoff);
+                continue 'agent;
+            }
+        }
+    }
+
+    eprintln!("Agent shut down.");
+}
+
+/// Compute the next backoff duration, applying exponential growth capped at
+/// `RECOVERY_MAX_BACKOFF_SECS`.
+fn next_backoff(current: Duration) -> Duration {
+    let next = (current.as_secs_f64() * RECOVERY_BACKOFF_MULTIPLIER)
+        .min(RECOVERY_MAX_BACKOFF_SECS as f64);
+    Duration::from_secs_f64(next)
+}
+
+/// Connect to the Veloren server, ensure a character exists, and enter the game.
+///
+/// Returns the connected `Client` on success, or a `String` error if the
+/// connection or character setup could not be completed within the timeout.
+fn connect_and_enter(
+    runtime: &Arc<Runtime>,
+    args: &Args,
+    provider: &SimpleCredentialProvider,
+) -> Result<Client, String> {
+    let addr = ConnectionArgs::Tcp {
+        hostname: args.server.clone(),
+        prefer_ipv6: false,
+    };
+
     let mut client = runtime
         .block_on(Client::new(
             addr,
-            Arc::clone(&runtime),
+            Arc::clone(runtime),
             None, // locale
-            &provider,
+            provider,
             &|_stage| {}, // version mismatch callback (unused)
             |_| {}, // add_foreign_systems
             PathBuf::from("/tmp/veloren-agent-config"),
             ClientType::Game,
         ))
-        .expect("failed to create Veloren client");
+        .map_err(|e| format!("failed to create Veloren client: {e:?}"))?;
 
-    eprintln!(
-        "Connected to {} (registered: {})",
-        args.server,
-        client.registered()
-    );
-
-    // --- Ensure a character exists and enter the game ---------------------
     ensure_character(&mut client, &args.character);
 
+    // Wait until we're in-game (presence becomes Some(Character(_)))
+    let clock = Clock::new(Duration::from_secs_f64(1.0 / TICKS_PER_SEC));
+    let mut waited = 0.0;
+    while client.presence().is_none() && waited < 15.0 {
+        let _ = client.tick(ControllerInputs::default(), clock.real_dt());
+        client.cleanup();
+        waited += clock.real_dt().as_secs_f64();
+    }
+
+    match client.presence() {
+        Some(_) => Ok(client),
+        None => Err("not yet in-game after startup".to_string()),
+    }
+}
+
+/// Run the main agent tick loop.
+///
+/// Returns `Ok(())` when the user sends `quit`, or `Err(String)` on
+/// connection loss (client.tick() error), signalling that the outer
+/// recovery loop should attempt to reconnect.
+fn run_tick_loop(client: &mut Client) -> Result<(), String> {
     // --- Main tick loop ---------------------------------------------------
     let mut clock = Clock::new(Duration::from_secs_f64(1.0 / TICKS_PER_SEC));
     let stdout = io::stdout();
@@ -233,7 +331,7 @@ fn main() {
     {
         let tx = cmd_tx.clone();
         std::thread::spawn(move || {
-            for line in io::stdin().lock().lines().flatten() {
+            for line in io::stdin().lock().lines().map_while(Result::ok) {
                 if tx.send(line).is_err() {
                     break;
                 }
@@ -272,53 +370,52 @@ fn main() {
 
         // --- Drain pending stdin commands (non-blocking) ------------------
         for line in cmd_rx.try_iter() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<AgentCommand>(trimmed) {
+                Ok(cmd) => match cmd {
+                    AgentCommand::Move { x, y } => {
+                        move_dir = Vec2::new(x, y);
                     }
-                    match serde_json::from_str::<AgentCommand>(trimmed) {
-                        Ok(cmd) => match cmd {
-                            AgentCommand::Move { x, y } => {
-                                move_dir = Vec2::new(x, y);
-                            }
-                            AgentCommand::Chat { msg } => {
-                                pending_chat = Some(msg);
-                            }
-                            AgentCommand::ServerCommand { name, args } => {
-                                pending_command = Some((name, args));
-                            }
-                            AgentCommand::Status => {
-                                // Status is reported every tick via observation.
-                            }
-                            AgentCommand::Quit => {
-                                client.logout();
-                                break 'running;
-                            }
-                            AgentCommand::Patrol { waypoints } => {
-                                if waypoints.is_empty() {
-                                    patrol_active = false;
-                                    patrol_index = 0;
-                                    eprintln!("Patrol stopped");
-                                } else {
-                                    patrol_waypoints = waypoints;
-                                    patrol_index = 0;
-                                    patrol_active = true;
-                                    eprintln!(
-                                        "Patrol started with {} waypoints",
-                                        patrol_waypoints.len()
-                                    );
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("Failed to parse command: {e}");
+                    AgentCommand::Chat { msg } => {
+                        pending_chat = Some(msg);
+                    }
+                    AgentCommand::ServerCommand { name, args } => {
+                        pending_command = Some((name, args));
+                    }
+                    AgentCommand::Status => {
+                        // Status is reported every tick via observation.
+                    }
+                    AgentCommand::Quit => {
+                        client.logout();
+                        break 'running;
+                    }
+                    AgentCommand::Patrol { waypoints } => {
+                        if waypoints.is_empty() {
+                            patrol_active = false;
+                            patrol_index = 0;
+                            eprintln!("Patrol stopped");
+                        } else {
+                            patrol_waypoints = waypoints;
+                            patrol_index = 0;
+                            patrol_active = true;
+                            eprintln!(
+                                "Patrol started with {} waypoints",
+                                patrol_waypoints.len()
+                            );
                         }
                     }
+                },
+                Err(e) => {
+                    eprintln!("Failed to parse command: {e}");
                 }
+            }
+        }
 
         // --- Apply inputs -------------------------------------------------
-        let mut inputs = ControllerInputs::default();
-        inputs.move_dir = move_dir;
+        let inputs = veloren_common::comp::ControllerInputs { move_dir, ..Default::default() };
 
         if let Some(msg) = pending_chat.take() {
             last_sent_chat = Some(msg.clone());
@@ -332,8 +429,7 @@ fn main() {
         let events = match client.tick(inputs, clock.real_dt()) {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("Client tick error: {e:?}");
-                break;
+                return Err(format!("client tick error: {e:?}"));
             }
         };
 
@@ -351,7 +447,7 @@ fn main() {
                     if chat_buffer.len() > 50 {
                         chat_buffer.remove(0);
                     }
-                    // --- Event-driven auto-response --------------------
+                    // --- Event-driven auto-response ---------------------
                     // Auto-reply once per cooldown when a player addresses the
                     // agent (by name or keyword), never echoing our own text.
                     let lowered = content.to_lowercase();
@@ -434,7 +530,7 @@ fn main() {
         client.cleanup();
     }
 
-    eprintln!("Agent shut down.");
+    Ok(())
 }
 
 /// Ensure the named character exists on the server and enter the game.
@@ -531,5 +627,161 @@ fn ensure_character(client: &mut Client, character_name: &str) {
     match client.presence() {
         Some(_) => eprintln!("In-game. Agent ready."),
         None => eprintln!("Warning: not yet in-game after startup."),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Test that all `AgentCommand` variants deserialize correctly from JSON.
+    #[test]
+    fn test_agent_command_deserialization() {
+        // move
+        let cmd: AgentCommand =
+            serde_json::from_str(r#"{"cmd":"move","x":0.5,"y":-1.0}"#).unwrap();
+        assert!(matches!(cmd, AgentCommand::Move { x, y } if (x - 0.5).abs() < f32::EPSILON && (y + 1.0).abs() < f32::EPSILON));
+
+        // chat
+        let cmd: AgentCommand = serde_json::from_str(r#"{"cmd":"chat","msg":"hello"}"#).unwrap();
+        assert!(matches!(cmd, AgentCommand::Chat { msg } if msg == "hello"));
+
+        // command
+        let cmd: AgentCommand =
+            serde_json::from_str(r#"{"cmd":"command","name":"say","args":["hi"]}"#).unwrap();
+        assert!(matches!(
+            cmd,
+            AgentCommand::ServerCommand { name, args } if name == "say" && args == vec!["hi".to_string()]
+        ));
+
+        // status
+        let cmd: AgentCommand = serde_json::from_str(r#"{"cmd":"status"}"#).unwrap();
+        assert!(matches!(cmd, AgentCommand::Status));
+
+        // patrol
+        let cmd: AgentCommand =
+            serde_json::from_str(r#"{"cmd":"patrol","waypoints":[[1.0,2.0],[3.0,4.0]]}"#).unwrap();
+        assert!(matches!(cmd, AgentCommand::Patrol { waypoints } if waypoints.len() == 2));
+
+        // quit
+        let cmd: AgentCommand = serde_json::from_str(r#"{"cmd":"quit"}"#).unwrap();
+        assert!(matches!(cmd, AgentCommand::Quit));
+    }
+
+    /// Test that invalid JSON commands are rejected.
+    #[test]
+    fn test_agent_command_invalid_json_rejected() {
+        let result: Result<AgentCommand, _> =
+            serde_json::from_str(r#"{"cmd":"unknown","x":1}"#);
+        assert!(result.is_err());
+
+        let result: Result<AgentCommand, _> = serde_json::from_str(r#"not json at all"#);
+        assert!(result.is_err());
+    }
+
+    /// Test `Observation` serialization produces well-formed JSON.
+    #[test]
+    fn test_observation_serialization() {
+        let obs = Observation {
+            schema_version: SCHEMA_VERSION,
+            tick: 1234,
+            registered: true,
+            presence: Some("Some(Character(...))".to_string()),
+            position: Some([150.5, 200.3, 10.0]),
+            health: Some(HealthObs {
+                current: 100.0,
+                maximum: 100.0,
+                is_dead: false,
+            }),
+            chat: vec!["hello".to_string()],
+            events: vec![],
+        };
+
+        let json = serde_json::to_string(&obs).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["tick"], 1234);
+        assert_eq!(parsed["registered"], true);
+        assert_eq!(parsed["position"], json!( [150.5, 200.3, 10.0] ));
+        assert_eq!(parsed["health"]["is_dead"], false);
+        assert_eq!(parsed["chat"][0], "hello");
+    }
+
+    /// Test `Observation` with null optional fields serializes correctly.
+    #[test]
+    fn test_observation_null_fields() {
+        let obs = Observation {
+            schema_version: SCHEMA_VERSION,
+            tick: 0,
+            registered: false,
+            presence: None,
+            position: None,
+            health: None,
+            chat: vec![],
+            events: vec![],
+        };
+
+        let json = serde_json::to_string(&obs).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["tick"], 0);
+        assert_eq!(parsed["registered"], false);
+        assert!(parsed["presence"].is_null());
+        assert!(parsed["position"].is_null());
+        assert!(parsed["health"].is_null());
+        assert_eq!(parsed["chat"].as_array().unwrap().len(), 0);
+    }
+
+    /// Test `HealthObs` serialization.
+    #[test]
+    fn test_health_obs_serialization() {
+        let health = HealthObs {
+            current: 50.0,
+            maximum: 100.0,
+            is_dead: false,
+        };
+        let json = serde_json::to_string(&health).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["current"], 50.0);
+        assert_eq!(parsed["maximum"], 100.0);
+        assert_eq!(parsed["is_dead"], false);
+    }
+
+    /// Test `next_backoff` exponential growth and cap.
+    #[test]
+    fn test_next_backoff_growth_and_cap() {
+        let b0 = Duration::from_secs(RECOVERY_INITIAL_BACKOFF_SECS);
+        let b1 = next_backoff(b0);
+        let b2 = next_backoff(b1);
+        let b3 = next_backoff(b2);
+
+        // Should grow exponentially.
+        assert!(b1 > b0);
+        assert!(b2 > b1);
+
+        // Should not exceed the max cap.
+        assert!(b3.as_secs() <= RECOVERY_MAX_BACKOFF_SECS);
+
+        // At max cap, further calls stay at the cap.
+        let max_cap = Duration::from_secs(RECOVERY_MAX_BACKOFF_SECS);
+        assert_eq!(next_backoff(max_cap), max_cap);
+    }
+
+    /// Test that `next_backoff` never decreases.
+    #[test]
+    fn test_next_backoff_monotonic() {
+        let mut b = Duration::from_secs(1);
+        for _ in 0..20 {
+            let next = next_backoff(b);
+            assert!(next >= b, "backoff must not decrease");
+            b = next;
+        }
     }
 }
