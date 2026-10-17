@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    uses: itsdarklikehell/ci-templates/.github/workflows/ci-shell.yml@v1
+    uses: itsdarklikehell/ci-templates/.github/workflows/ci-shell.yml@main
     with:
       shellcheck: true
       shfmt: true
