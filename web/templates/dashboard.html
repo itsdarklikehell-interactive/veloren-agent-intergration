@@ -23,6 +23,7 @@
     <a class="tab" href="#control">Control Panel</a>
     <a class="tab" href="#server-logs">Server Logs</a>
     <a class="tab" href="#agent-logs">Agent Logs</a>
+    <a class="tab" href="#performance">Performance</a>
   </nav>
 
   <main class="wrap">
@@ -111,6 +112,49 @@
       <h2>Agent Logs <span class="muted">(stdout/stderr of the veloren-agent process)</span></h2>
       <div class="card log-card" style="grid-column: 1 / -1">
         <pre id="log-agent" class="log-pre">waiting for agent log data&hellip;</pre>
+      </div>
+    </section>
+
+    <!-- Performance -->
+    <section class="panel" id="performance">
+      <h2>Performance</h2>
+      <p class="hint">Prometheus metrics from <code>GET /metrics</code> — tick-latency baseline (min/avg/max over the last 10,000 persisted ticks), observation throughput, game-server connectivity, agent uptime, dashboard request count. Polled every 5s; no game server required.</p>
+      <div class="grid grid-4">
+        <div class="card metric-card">
+          <h3>Observations</h3>
+          <p class="big" id="perf-observations">—</p>
+          <p class="meta">agent_observations_total</p>
+        </div>
+        <div class="card metric-card">
+          <h3>Last tick</h3>
+          <p class="big" id="perf-last-tick">—</p>
+          <p class="meta">last_observation_tick</p>
+        </div>
+        <div class="card metric-card">
+          <h3>Game server</h3>
+          <span class="chip" id="perf-server">checking&hellip;</span>
+          <p class="meta">server_connected</p>
+        </div>
+        <div class="card metric-card">
+          <h3>Agent uptime</h3>
+          <p class="big" id="perf-uptime">—</p>
+          <p class="meta">agent_uptime_seconds</p>
+        </div>
+        <div class="card metric-card">
+          <h3>Tick latency (avg)</h3>
+          <p class="big" id="perf-lat-avg">— ms</p>
+          <p class="meta">min / avg / max over last 10k ticks</p>
+        </div>
+        <div class="card metric-card">
+          <h3>Dashboard requests</h3>
+          <p class="big" id="perf-requests">—</p>
+          <p class="meta">dashboard_requests_total</p>
+        </div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1">
+        <h3>Tick latency — rolling average</h3>
+        <svg id="perf-sparkline" class="sparkline" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="tick-latency history"></svg>
+        <div class="sparkline-labels" id="perf-sparkline-labels">min: — · avg: — · max: —</div>
       </div>
     </section>
   </main>

@@ -7,6 +7,7 @@ are delivered by polling JSON endpoints (no WebSockets):
   GET /                dashboard page (public)
   GET /api/health      uptime, version, last observation tick (public)
   GET /metrics         Prometheus-format metrics (public scrape target)
+  GET /api/metrics     same metrics as JSON (dashboard API key required)
   GET /api/status      server tmux session, port 14004, agent running, registered
   GET /api/server-logs tmux capture-pane output of the 'veloren-server' session
   GET /api/agent-logs  raw agent stdout/stderr tail
@@ -466,9 +467,13 @@ def health():
     )
 
 
-@app.get("/metrics")
-def metrics():
-    """Prometheus text-format metrics; scrape target for Prometheus."""
+def metrics_payload() -> dict:
+    """Compute the Prometheus metric values as a plain dict.
+
+    Shared by GET /metrics (text exposition format) and GET /api/metrics (JSON).
+    All values are computed from live state + the SQLite persistence store so the
+    tick-latency baseline survives dashboard restarts.
+    """
     with _state_lock:
         requests_total = _requests_total
         agent_start = _agent_start_time
@@ -493,47 +498,120 @@ def metrics():
     if agent_start is not None:
         uptime = max(0.0, time.monotonic() - agent_start)
 
-    lines: list[str] = []
-
-    def metric(name: str, documentation: str, typ: str) -> None:
-        lines.append(f"# HELP {name} {documentation}")
-        lines.append(f"# TYPE {name} {typ}")
-
-    metric(
-        "agent_observations_total",
-        "Total number of agent observations received and persisted",
-        "counter",
-    )
-    lines.append(f"agent_observations_total {obs_total}")
-
-    metric(
-        "agent_tick_latency_seconds",
-        "Tick processing latency baseline in seconds (min/avg/max over persisted samples)",
-        "gauge",
-    )
+    latency: dict = {}
     if durations:
-        lines.append(f'agent_tick_latency_seconds{{stat="min"}} {min(durations):.6f}')
-        lines.append(f'agent_tick_latency_seconds{{stat="avg"}} {sum(durations) / len(durations):.6f}')
-        lines.append(f'agent_tick_latency_seconds{{stat="max"}} {max(durations):.6f}')
+        latency = {
+            "min": min(durations),
+            "avg": sum(durations) / len(durations),
+            "max": max(durations),
+            "count": len(durations),
+        }
+
+    return {
+        "agent_observations_total": obs_total,
+        "agent_tick_latency_seconds": latency,
+        "server_connected": connected,
+        "agent_uptime_seconds": uptime,
+        "last_observation_tick": last_tick,
+        "dashboard_requests_total": requests_total,
+    }
+
+
+def _format_metric(name: str, documentation: str, typ: str, value_lines: list[str]) -> list[str]:
+    lines: list[str] = []
+    lines.append(f"# HELP {name} {documentation}")
+    lines.append(f"# TYPE {name} {typ}")
+    lines.extend(value_lines)
+    return lines
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus text-format metrics; scrape target for Prometheus."""
+    payload = metrics_payload()
+    lat = payload["agent_tick_latency_seconds"] or {}
+    last_tick = payload["last_observation_tick"]
+
+    lines: list[str] = []
+    lines.extend(
+        _format_metric(
+            "agent_observations_total",
+            "Total number of agent observations received and persisted",
+            "counter",
+            [f"agent_observations_total {payload['agent_observations_total']}"],
+        )
+    )
+    if lat:
+        lines.extend(
+            _format_metric(
+                "agent_tick_latency_seconds",
+                "Tick processing latency baseline in seconds (min/avg/max over persisted samples)",
+                "gauge",
+                [
+                    f'agent_tick_latency_seconds{{stat="min"}} {lat["min"]:.6f}',
+                    f'agent_tick_latency_seconds{{stat="avg"}} {lat["avg"]:.6f}',
+                    f'agent_tick_latency_seconds{{stat="max"}} {lat["max"]:.6f}',
+                ],
+            )
+        )
     else:
-        lines.append('agent_tick_latency_seconds{stat="min"} 0')
-        lines.append('agent_tick_latency_seconds{stat="avg"} 0')
-        lines.append('agent_tick_latency_seconds{stat="max"} 0')
-
-    metric("server_connected", "Whether the game server port is accepting connections (1 = yes, 0 = no)", "gauge")
-    lines.append(f"server_connected {connected}")
-
-    metric("agent_uptime_seconds", "Seconds the agent process has been running in this dashboard session (0 when stopped)", "gauge")
-    lines.append(f"agent_uptime_seconds {uptime:.3f}")
-
-    metric("last_observation_tick", "Tick number of the most recently received agent observation", "gauge")
-    lines.append(f"last_observation_tick {last_tick if last_tick is not None else 0}")
-
-    metric("dashboard_requests_total", "Total number of HTTP requests served by the dashboard", "counter")
-    lines.append(f"dashboard_requests_total {requests_total}")
-
+        lines.extend(
+            _format_metric(
+                "agent_tick_latency_seconds",
+                "Tick processing latency baseline in seconds (min/avg/max over persisted samples)",
+                "gauge",
+                [
+                    'agent_tick_latency_seconds{stat="min"} 0',
+                    'agent_tick_latency_seconds{stat="avg"} 0',
+                    'agent_tick_latency_seconds{stat="max"} 0',
+                ],
+            )
+        )
+    lines.extend(
+        _format_metric(
+            "server_connected",
+            "Whether the game server port is accepting connections (1 = yes, 0 = no)",
+            "gauge",
+            [f"server_connected {payload['server_connected']}"],
+        )
+    )
+    lines.extend(
+        _format_metric(
+            "agent_uptime_seconds",
+            "Seconds the agent process has been running in this dashboard session (0 when stopped)",
+            "gauge",
+            [f"agent_uptime_seconds {payload['agent_uptime_seconds']:.3f}"],
+        )
+    )
+    lines.extend(
+        _format_metric(
+            "last_observation_tick",
+            "Tick number of the most recently received agent observation",
+            "gauge",
+            [f"last_observation_tick {last_tick if last_tick is not None else 0}"],
+        )
+    )
+    lines.extend(
+        _format_metric(
+            "dashboard_requests_total",
+            "Total number of HTTP requests served by the dashboard",
+            "counter",
+            [f"dashboard_requests_total {payload['dashboard_requests_total']}"],
+        )
+    )
     body = "\n".join(lines) + "\n"
     return Response(body, content_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/api/metrics")
+def api_metrics():
+    """JSON rendering of the Prometheus metrics (dashboard API key required).
+
+    Same values as GET /metrics, returned as JSON for dashboard clients:
+    observation throughput, tick-latency baseline (min/avg/max), server
+    connectivity, agent uptime, last observation tick and request count.
+    """
+    return jsonify(metrics_payload())
 
 
 @app.get("/api/status")

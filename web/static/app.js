@@ -2,8 +2,10 @@
 (function () {
   const POLL_STATUS = 2000;
   const POLL_LOGS = 3000;
+  const POLL_METRICS = 5000;
 
   const el = (id) => document.getElementById(id);
+  let latencyHistory = []; // {t: epochMs, v: avg seconds} rolling window for the sparkline
 
   function setChip(id, state, label) {
     const chip = el(id);
@@ -28,6 +30,21 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function fmtCount(n) {
+    return typeof n === "number" ? String(n) : "—";
+  }
+
+  function fmtMs(seconds) {
+    return typeof seconds === "number" ? (seconds * 1000).toFixed(2) + " ms" : "—";
+  }
+
+  function fmtUptime(seconds) {
+    if (typeof seconds !== "number") return "—";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return m > 0 ? m + "m " + s + "s" : s + "s";
   }
 
   function renderStatus(data) {
@@ -146,6 +163,72 @@
     });
   }
 
+  function renderMetrics(data) {
+    if (!data) return;
+    const lat = data.agent_tick_latency_seconds || {};
+
+    setText("perf-observations", fmtCount(data.agent_observations_total));
+    setText("perf-last-tick", fmtCount(data.last_observation_tick));
+
+    const serverChip = el("perf-server");
+    if (serverChip) {
+      serverChip.className = "chip " + (data.server_connected ? "up" : "down");
+      serverChip.textContent = data.server_connected
+        ? "server: reachable"
+        : "server: not reachable";
+    }
+
+    setText("perf-uptime", fmtUptime(data.agent_uptime_seconds));
+    setText("perf-requests", fmtCount(data.dashboard_requests_total));
+    setText("perf-lat-avg", fmtMs(lat.avg));
+
+    const labels = el("perf-sparkline-labels");
+    if (labels) {
+      labels.textContent =
+        "min: " +
+        fmtMs(lat.min) +
+        " · avg: " +
+        fmtMs(lat.avg) +
+        " · max: " +
+        fmtMs(lat.max) +
+        " (" +
+        fmtCount(lat.count) +
+        " samples)";
+    }
+
+    const now = Date.now();
+    if (typeof lat.avg === "number") latencyHistory.push({ t: now, v: lat.avg });
+    while (latencyHistory.length > 60) latencyHistory.shift();
+    drawSparkline("perf-sparkline", latencyHistory);
+  }
+
+  function drawSparkline(id, history) {
+    const svg = el(id);
+    if (!svg) return;
+    if (history.length < 2) {
+      svg.innerHTML = "";
+      return;
+    }
+    const values = history.map(function (h) { return h.v; });
+    const vmin = Math.min.apply(null, values);
+    const vmax = Math.max.apply(null, values);
+    const range = vmax - vmin || 1;
+    const points = history
+      .map(function (h, i) {
+        var x = 10 + (i / (history.length - 1)) * 80;
+        var y = 90 - ((h.v - vmin) / range) * 80;
+        return x + "," + y;
+      })
+      .join(" ");
+    svg.innerHTML =
+      '<polyline points="' + escapeHtml(points) + '" class="sparkline-line"/>';
+  }
+
+  function pollMetrics() {
+    // Metrics are non-critical: fail silently (no game server required).
+    request("/api/metrics").then(renderMetrics).catch(function () {});
+  }
+
   function postJson(url, body) {
     return request(url, {
       method: "POST",
@@ -226,10 +309,12 @@
     pollServerLogs();
     pollAgentLogs();
     pollObservations();
+    pollMetrics();
     setInterval(pollStatus, POLL_STATUS);
     setInterval(pollServerLogs, POLL_LOGS);
     setInterval(pollAgentLogs, POLL_LOGS);
     setInterval(pollObservations, POLL_LOGS);
+    setInterval(pollMetrics, POLL_METRICS);
   }
 
   document.addEventListener("DOMContentLoaded", function () {

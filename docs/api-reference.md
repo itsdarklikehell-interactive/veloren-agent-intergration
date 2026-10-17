@@ -126,6 +126,22 @@ echo '{"cmd":"quit"}' | ./target/release/veloren-agent --character HERMES
 - Position and health are `null` until the player has entered the game world.
 - `presence` is `None` during character selection/loading; becomes `Some(Character(...))` once in-game.
 
+## Server lifecycle auto-recovery
+If the connection to the Veloren server is lost (`client.tick()` returns an error),
+the agent does not exit. Instead it enters an auto-recovery loop:
+
+1. **Detect** — a tick error signals the connection is lost.
+2. **Back off** — wait for an initial 1 second, then double the backoff after each
+   failed attempt, capped at 60 seconds.
+3. **Reconnect** — create a new `Client`, re-authenticate with the same
+   credentials, and run `ensure_character()` to find or re-create the character.
+4. **Resume** — once the agent is back in-game (`presence` becomes `Some`),
+   the tick loop resumes and observations flow again.
+
+The outer recovery loop only exits on a clean `{"cmd":"quit"}` command. This
+means transient server restarts, network blips, or brief port unavailability are
+handled automatically without operator intervention.
+
 ## Prometheus Metrics
 
 ### `GET /metrics`
@@ -171,3 +187,32 @@ avg_over_time(agent_tick_latency_seconds{stat="avg"}[1h])
 # Dashboard request rate
 rate(dashboard_requests_total[5m])
 ```
+
+### `GET /api/metrics`
+
+JSON rendering of the same metrics exposed by `GET /metrics`, for dashboard clients (and anything that prefers JSON over Prometheus text format). Requires the dashboard API key (`X-API-Key` header or `Authorization: Bearer`), like the other `GET /api/*` endpoints.
+
+Response:
+
+```json
+{
+  "agent_observations_total": 1234,
+  "agent_tick_latency_seconds": { "min": 0.0012, "avg": 0.0034, "max": 0.0120, "count": 5000 },
+  "server_connected": 1,
+  "agent_uptime_seconds": 3661.5,
+  "last_observation_tick": 9000,
+  "dashboard_requests_total": 842
+}
+```
+
+When no tick-latency samples have been persisted yet, `agent_tick_latency_seconds` is `{}` and the dashboard renders "—" for latency values.
+
+## Dashboard tabs
+
+The dashboard (`GET /`) has five tabs:
+
+- **Status** — server tmux session, port 14004, agent process, registration, last observation.
+- **Control Panel** — start/stop server and agent, send JSON commands to the agent's stdin, live observations.
+- **Server Logs** — tmux `capture-pane` tail of the `veloren-server` session.
+- **Agent Logs** — stdout/stderr tail of the `veloren-agent` process.
+- **Performance** — Prometheus metrics from `GET /metrics` (observation throughput, tick-latency min/avg/max baseline with a rolling sparkline, server connectivity, agent uptime, dashboard request count), polled every 5s. No game server required.
