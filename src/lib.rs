@@ -508,11 +508,12 @@ pub fn obstacle_avoidance(cur: Vec2<f32>, entities: &[[f32; 3]], radius: f32) ->
         avoid += away / dist * (1.0 - dist / radius);
     }
     if avoid.magnitude() > 0.001 {
-        avoid.normalize();
-        avoid
+        let mag = avoid.magnitude();
+        Vec2::new(avoid.x / mag, avoid.y / mag)
     } else {
         avoid
     }
+}
 
 /// Tiny xorshift PRNG used by wander mode to pick exploration targets without
 /// pulling in an extra dependency.
@@ -593,6 +594,10 @@ pub fn run_agent<C: GameConnection>(
     // A2A kanban heartbeat state.
     let mut ticks_since_heartbeat: u64 = 0;
 
+    // Autonomous goal-oriented behavior system (explore / gather / avoid
+    // danger) with priority-based action selection and cooldowns.
+    let mut behavior = BehaviorSystem::default();
+
     loop {
         clock.tick();
         auto_response_cooldown = auto_response_cooldown.saturating_sub(1);
@@ -606,8 +611,10 @@ pub fn run_agent<C: GameConnection>(
 
         // Movement resets every tick. Patrol/wander sets a base steering
         // direction below; an explicit `{"cmd":"move"}` command overrides it
-        // when commands drain.
+        // when commands drain, and the behavior system arbitrates movement
+        // when no explicit command is issued.
         let mut move_dir = Vec2::zero();
+        let mut explicit_move = false;
 
         // Observation events emitted this tick (chat events + patrol notes).
         let mut obs_events: Vec<String> = Vec::new();
@@ -720,6 +727,7 @@ pub fn run_agent<C: GameConnection>(
                 Ok(cmd) => match cmd {
                     AgentCommand::Move { x, y } => {
                         move_dir = Vec2::new(x, y);
+                        explicit_move = true;
                     }
                     AgentCommand::Chat { msg } => {
                         pending_chat = Some(msg);
@@ -742,6 +750,7 @@ pub fn run_agent<C: GameConnection>(
                             patrol_waypoints = waypoints;
                             patrol_index = 0;
                             patrol_active = true;
+                            wander_active = false;
                         }
                         waypoint_stuck_ticks = 0;
                         last_dist_to_target = None;
@@ -762,6 +771,42 @@ pub fn run_agent<C: GameConnection>(
                     eprintln!("Failed to parse command: {e}");
                 }
             }
+        }
+
+        // --- Autonomous goal-oriented behavior --------------------------
+        // When no explicit move command was issued, the behavior system
+        // arbitrates movement: goal selection from health / nearby entities /
+        // position with cooldowns, then priority-based action selection
+        // (avoid danger > gather > explore). Explore reuses the patrol/wander
+        // steering already computed above (`move_dir` holds it when patrolling).
+        if !explicit_move {
+            let behavior_health = conn.health();
+            let inputs = BehaviorInputs {
+                health: behavior_health,
+                position: last_position,
+                nearby_entities: conn.nearby_entities(NEARBY_ENTITY_RADIUS),
+                patrol_steering: move_dir,
+            };
+            let action = behavior.chosen_action(&inputs);
+            move_dir = action.move_dir;
+        }
+
+        // --- Autonomous goal-oriented behavior --------------------------
+        // When no explicit move command was issued this tick, the behavior
+        // system arbitrates movement: goal selection from health / nearby
+        // entities / position with cooldowns, then priority-based action
+        // selection (avoid danger > gather > explore). Explore reuses the
+        // patrol/wander steering already computed above (`move_dir`).
+        if !explicit_move {
+            let behavior_health = conn.health();
+            let inputs = BehaviorInputs {
+                health: behavior_health,
+                position: last_position,
+                nearby_entities: conn.nearby_entities(NEARBY_ENTITY_RADIUS),
+                patrol_steering: move_dir,
+            };
+            let action = behavior.chosen_action(&inputs);
+            move_dir = action.move_dir;
         }
 
         // --- Apply inputs -------------------------------------------------

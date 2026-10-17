@@ -24,6 +24,7 @@ const HEALTH_LOW_RATIO: f32 = 0.30;
 const GOAL_COOLDOWN_TICKS: u64 = 120;
 
 /// Ticks between gather actions toward the same set of nearby entities.
+#[allow(dead_code)]
 const GATHER_COOLDOWN_TICKS: u64 = 60;
 
 /// Radius (world units) within which an entity counts as "nearby" for
@@ -69,7 +70,7 @@ pub struct BehaviorInputs {
 }
 
 /// A candidate movement action produced by a goal.
-#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct BehaviorAction {
     pub goal: Goal,
     pub move_dir: Vec2<f32>,
@@ -109,6 +110,7 @@ impl BehaviorSystem {
 
         let health_ratio = inputs
             .health
+            .as_ref()
             .map(|h| {
                 if h.maximum > 0.0 {
                     h.current / h.maximum
@@ -117,7 +119,7 @@ impl BehaviorSystem {
                 }
             })
             .unwrap_or(1.0);
-        let is_dead = inputs.health.map(|h| h.is_dead).unwrap_or(false);
+        let is_dead = inputs.health.as_ref().map(|h| h.is_dead).unwrap_or(false);
         let has_entities = !inputs.nearby_entities.is_empty();
 
         let new_goal = if is_dead || health_ratio < HEALTH_LOW_RATIO {
@@ -130,8 +132,13 @@ impl BehaviorSystem {
 
         if new_goal != self.goal {
             self.goal = new_goal;
-            self.goal_cooldown = GOAL_COOLDOWN_TICKS;
+            if new_goal == Goal::Gather {
+                self.gather_cooldown = GATHER_COOLDOWN_TICKS;
+            }
         }
+        // Commit to the selected goal for the cooldown window so the agent
+        // does not flip-flop between goals every tick.
+        self.goal_cooldown = GOAL_COOLDOWN_TICKS;
         self.goal
     }
 
