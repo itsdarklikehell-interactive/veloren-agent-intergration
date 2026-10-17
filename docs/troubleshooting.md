@@ -24,16 +24,37 @@ rustup toolchain install nightly
 cargo +nightly build --release
 ```
 
-**Workaround 2 — Patch registry crates:**
+**Workaround 2 — Patch transitive dependencies for modern toolchains:**
 
-Remove the `#![cfg_attr(feature = "nightly", feature(...))]` lines from:
-- `~/.cargo/registry/src/.../foldhash-0.2.0/src/lib.rs`, `fast.rs`, `quality.rs`
-- `~/.cargo/registry/src/.../hashbrown-0.17.1/src/lib.rs`
-- `~/.cargo/registry/src/.../shred-0.15.0/src/lib.rs`
+`veloren-client` (gitlab `weekly`) pulls crates that use APIs removed from
+modern Rust, so the build fails on both stable and nightly until patched.
+Apply these after `cargo fetch`. The repo's `patches/veloren-weekly-toolchain.patch`
+contains the git-checkout half and is applied automatically by CI
+(`.github/workflows/ci.yml`, nightly job) and the Docker sandbox (`Dockerfile`):
 
-Remove the `#[cfg(feature = "nightly")] fn write_str(...)` blocks from `foldhash` source files.
+Registry crates (`~/.cargo/registry/src/*/<crate>-<version>/`):
+- `shred-0.15.0/src/meta.rs`: replace
+  `core::ptr::invalid_mut::<R>((self as *mut Self).addr())` with
+  `(self as *mut Self).wrapping_add(1).cast::<R>()` (`ptr::invalid_mut` no
+  longer exists).
 
-**Note:** These patches are local to your machine and not committed to the repo.
+Git checkout (`~/.cargo/git/checkouts/veloren-*/<rev>/`):
+- `common/src/event.rs`: `use specs::shred;` →
+  `use specs::shred::{ResourceId, SystemData, World};` inside the
+  `event_emitters!` macro.
+- `common/state/src/state.rs`: `shred::{Fetch, FetchMut, SendDispatcher}` →
+  `shred::{Fetch, FetchMut, AsyncDispatcher, Dispatcher}`; add
+  `use std::ops::{Deref, DerefMut};`; add the `SendDispatcher(Dispatcher)`
+  wrapper with `unsafe impl Send/Sync`; `DispatcherBuilder::new()` →
+  `DispatcherBuilder::<'static, 'static>::new()`; drop
+  `.try_into_sendable()`; field `dispatcher: SendDispatcher(dispatcher)`;
+  add `unsafe impl Send/Sync for State`.
+- `common/base/src/userdata_dir.rs`: `env!("CARGO_WORKSPACE_DIR")` →
+  `std::env::var("CARGO_WORKSPACE_DIR")` with a `"."` fallback (compile-time
+  `env!()` is unavailable for git dependencies).
+- `common/src/slowjob.rs`: `HashMap<&String, u64>` → `HashMap<String, u64>`.
+- `common/systems/src/{arcing,aura,beam,buff,character_behavior,controller,interpolation,melee,phys/mod,pool,projectile,shockwave,stats}.rs`:
+  add `use specs::shred::ResourceId;` and `use specs::World;`.
 
 ## teloren cannot resolve `127.0.0.1`
 

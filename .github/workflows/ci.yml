@@ -21,10 +21,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install nightly Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
+      - name: Fetch dependencies
+        run: cargo fetch
+      - name: Patch transitive deps for modern toolchains
+        run: |
+          # veloren-weekly's transitive deps (shred, veloren-common) use APIs
+          # removed from modern Rust; apply the project's toolchain-compatibility
+          # patches (patches/veloren-weekly-toolchain.patch, see docs/troubleshooting.md).
+          cd ~/.cargo/git/checkouts/veloren-*/f97be34 && git apply /github/workspace/patches/veloren-weekly-toolchain.patch
+          sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as *mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' ~/.cargo/registry/src/*/shred-0.15.0/src/meta.rs
       - name: Build with zero warnings (nightly)
-        run: RUSTFLAGS="-D warnings" cargo build --release
+        run: RUSTFLAGS="-D warnings" cargo +nightly build --release
       - name: Run test suite (nightly)
-        run: cargo test --release
+        run: cargo +nightly test --release
 
   docker-sandbox:
     name: Docker sandbox build & test

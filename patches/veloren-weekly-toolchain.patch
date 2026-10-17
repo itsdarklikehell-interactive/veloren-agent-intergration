@@ -1,0 +1,397 @@
+diff --git c/common/base/src/userdata_dir.rs w/common/base/src/userdata_dir.rs
+index 62c01ad8e..0af900574 100644
+--- c/common/base/src/userdata_dir.rs
++++ w/common/base/src/userdata_dir.rs
+@@ -59,7 +59,11 @@ pub fn userdata_dir() -> PathBuf {
+         // 3. The CARGO_WORKSPACE_DIR/userdata compile time environment variable
+         //    defined in .cargo/config.toml
+         .unwrap_or_else(|| {
+-            let mut path = PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
++            let mut path = if let Ok(dir) = std::env::var("CARGO_WORKSPACE_DIR") {
++                PathBuf::from(dir)
++            } else {
++                PathBuf::from(".")
++            };
+             let exe_path = std::env::current_exe()
+                 .expect("Failed to retrieve executable path!");
+             // If this path exists
+diff --git c/common/src/event.rs w/common/src/event.rs
+index d21580256..4d695069d 100644
+--- c/common/src/event.rs
++++ w/common/src/event.rs
+@@ -698,7 +698,7 @@ macro_rules! event_emitters {
+     ($($vis:vis struct $read_data:ident[$emitters:ident] { $($(#[$($tt:tt)*])? $ev_ident:ident: $ty:ty),+ $(,)? })+) => {
+         mod event_emitters {
+             use super::*;
+-            use specs::shred;
++            use specs::shred::{ResourceId, SystemData, World};
+             $(
+             #[derive(specs::SystemData)]
+             pub struct $read_data<'a> {
+diff --git c/common/src/slowjob.rs w/common/src/slowjob.rs
+index 4812064d4..c0fff8122 100644
+--- c/common/src/slowjob.rs
++++ w/common/src/slowjob.rs
+@@ -186,7 +186,7 @@ impl InternalSlowJobPool {
+     /// returns order of configuration which are queued next
+     fn calc_queued_order(
+         &self,
+-        mut queued: HashMap<&String, u64>,
++        mut queued: HashMap<String, u64>,
+         mut limit: usize,
+     ) -> Vec<String> {
+         let mut roundrobin = self.last_spawned_configs.clone();
+@@ -203,7 +203,7 @@ impl InternalSlowJobPool {
+                 (
+                     n,
+                     queued
+-                        .get(&n)
++                        .get(n)
+                         .cloned()
+                         .unwrap_or(0)
+                         .min(c.local_limit - c.local_spawned_and_running),
+@@ -269,11 +269,10 @@ impl InternalSlowJobPool {
+         let queued = self
+             .queue
+             .iter()
+-            .map(|(n, m)| (n, m.len() as u64))
++            .map(|(n, m)| (n.clone(), m.len() as u64))
+             .collect::<HashMap<_, u64>>();
+         let mut to_be_queued = queued.clone();
+-        let name = name.to_owned();
+-        *to_be_queued.entry(&name).or_default() += 1;
++        *to_be_queued.entry(name.to_owned()).or_default() += 1;
+         let limit = (self.global_limit - self.global_spawned_and_running) as usize;
+         // calculate to_be_queued first
+         let to_be_queued_order = self.calc_queued_order(to_be_queued, limit);
+@@ -281,9 +280,9 @@ impl InternalSlowJobPool {
+         // if its queued one time more then its okay to spawn
+         let to_be_queued_cnt = to_be_queued_order
+             .into_iter()
+-            .filter(|n| n == &name)
++            .filter(|n| n == name)
+             .count();
+-        let queued_cnt = queued_order.into_iter().filter(|n| n == &name).count();
++        let queued_cnt = queued_order.into_iter().filter(|n| n == name).count();
+         to_be_queued_cnt > queued_cnt
+     }
+ 
+@@ -328,7 +327,7 @@ impl InternalSlowJobPool {
+         let queued = self
+             .queue
+             .iter()
+-            .map(|(n, m)| (n, m.len() as u64))
++            .map(|(n, m)| (n.clone(), m.len() as u64))
+             .collect::<HashMap<_, u64>>();
+         let limit = self.global_limit as usize;
+         let queued_order = self.calc_queued_order(queued, limit);
+diff --git c/common/state/src/state.rs w/common/state/src/state.rs
+index eabb2af2e..38896fa10 100644
+--- c/common/state/src/state.rs
++++ w/common/state/src/state.rs
+@@ -36,10 +36,11 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
+ use specs::{
+     Component, DispatcherBuilder, Entity as EcsEntity, WorldExt,
+     prelude::Resource,
+-    shred::{Fetch, FetchMut, SendDispatcher},
++    shred::{Fetch, FetchMut, AsyncDispatcher, Dispatcher},
+     storage::{MaskedStorage as EcsMaskedStorage, Storage as EcsStorage},
+ };
+ use std::{
++    ops::{Deref, DerefMut},
+     sync::{
+         Arc,
+         atomic::{AtomicBool, Ordering},
+@@ -129,6 +130,26 @@ pub struct BlockDiff {
+     pub new: Block,
+ }
+ 
++/// Wrapper to make `Dispatcher` `Send + Sync`.
++/// Safe as long as all systems added to the dispatcher are `Send` (they are in Veloren).
++struct SendDispatcher(Dispatcher<'static, 'static>);
++
++unsafe impl Send for SendDispatcher {}
++unsafe impl Sync for SendDispatcher {}
++
++impl Deref for SendDispatcher {
++    type Target = Dispatcher<'static, 'static>;
++    fn deref(&self) -> &Self::Target {
++        &self.0
++    }
++}
++
++impl DerefMut for SendDispatcher {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.0
++    }
++}
++
+ /// A type used to represent game state stored on both the client and the
+ /// server. This includes things like entity components, terrain data, and
+ /// global states like weather, time of day, etc.
+@@ -136,9 +157,14 @@ pub struct State {
+     ecs: specs::World,
+     // Avoid lifetime annotation by storing a thread pool instead of the whole dispatcher
+     thread_pool: Arc<ThreadPool>,
+-    dispatcher: SendDispatcher<'static>,
++    dispatcher: SendDispatcher,
+ }
+ 
++// State is Send + Sync: all systems added to the dispatcher are Send (they are in Veloren),
++// specs::World contains only Send resources, and rayon::ThreadPool is Send + Sync.
++unsafe impl Send for State {}
++unsafe impl Sync for State {}
++
+ pub type Pools = Arc<ThreadPool>;
+ 
+ impl State {
+@@ -252,9 +278,7 @@ impl State {
+         // TODO: Consider alternative ways to do this
+         add_systems(&mut dispatch_builder);
+         let dispatcher = dispatch_builder
+-            .build()
+-            .try_into_sendable()
+-            .unwrap_or_else(|_| panic!("Thread local systems not allowed"));
++            .build();
+         drop(guard);
+ 
+         Self {
+@@ -267,7 +291,7 @@ impl State {
+                 plugin_mgr,
+             ),
+             thread_pool: pools,
+-            dispatcher,
++            dispatcher: SendDispatcher(dispatcher),
+         }
+     }
+ 
+diff --git c/common/systems/src/arcing.rs w/common/systems/src/arcing.rs
+index e08d42676..fafb0aada 100644
+--- c/common/systems/src/arcing.rs
++++ w/common/systems/src/arcing.rs
+@@ -18,6 +18,9 @@ use common::{
+ };
+ use common_ecs::{Job, Origin, Phase, System};
+ use specs::{Entities, Join, LendJoin, Read, ReadStorage, SystemData, WriteStorage, shred};
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ event_emitters! {
+     struct Events[Emitters] {
+diff --git c/common/systems/src/aura.rs w/common/systems/src/aura.rs
+index 654eea574..a0a330e01 100644
+--- c/common/systems/src/aura.rs
++++ w/common/systems/src/aura.rs
+@@ -15,6 +15,9 @@ use common::{
+ };
+ use common_ecs::{Job, Origin, Phase, System};
+ use specs::{Entities, Entity as EcsEntity, Join, Read, ReadStorage, SystemData, shred};
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ event_emitters! {
+     struct Events[Emitters] {
+diff --git c/common/systems/src/beam.rs w/common/systems/src/beam.rs
+index 114047f2d..7e2fda878 100644
+--- c/common/systems/src/beam.rs
++++ w/common/systems/src/beam.rs
+@@ -22,9 +22,13 @@ use common_ecs::{Job, Origin, ParMode, Phase, System};
+ use rand::RngExt;
+ use rayon::iter::ParallelIterator;
+ use specs::{
++
+     Entities, LendJoin, ParJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage, shred,
+ };
+ use vek::*;
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ event_emitters! {
+     struct ReadAttackEvents[AttackEmitters] {
+diff --git c/common/systems/src/buff.rs w/common/systems/src/buff.rs
+index 62081ef09..7d1e2af40 100644
+--- c/common/systems/src/buff.rs
++++ w/common/systems/src/buff.rs
+@@ -29,10 +29,14 @@ use common_ecs::{Job, Origin, ParMode, Phase, System};
+ use rand::RngExt;
+ use rayon::iter::ParallelIterator;
+ use specs::{
++
+     Entities, Entity, LendJoin, ParJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage,
+     shred,
+ };
+ use vek::Vec3;
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ event_emitters! {
+     struct Events[EventEmitters] {
+diff --git c/common/systems/src/character_behavior.rs w/common/systems/src/character_behavior.rs
+index 67c5e00e7..876fe811d 100644
+--- c/common/systems/src/character_behavior.rs
++++ w/common/systems/src/character_behavior.rs
+@@ -1,5 +1,6 @@
+ use common_net::synced_components::Heads;
+ use specs::{
++
+     Entities, LazyUpdate, LendJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage, shred,
+ };
+ 
+@@ -25,6 +26,9 @@ use common::{
+     uid::{IdMaps, Uid},
+ };
+ use common_ecs::{Job, Origin, Phase, System};
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ #[derive(SystemData)]
+ pub struct ReadData<'a> {
+diff --git c/common/systems/src/controller.rs w/common/systems/src/controller.rs
+index 35916376a..2e0426c81 100644
+--- c/common/systems/src/controller.rs
++++ w/common/systems/src/controller.rs
+@@ -13,6 +13,9 @@ use common::{
+ };
+ use common_ecs::{Job, Origin, Phase, System};
+ use specs::{Entities, LendJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage, shred};
++use specs::shred::ResourceId;
++use specs::World;
++
+ use tracing::warn;
+ use vek::*;
+ 
+diff --git c/common/systems/src/interpolation.rs w/common/systems/src/interpolation.rs
+index 4b0271520..f72bb71b2 100644
+--- c/common/systems/src/interpolation.rs
++++ w/common/systems/src/interpolation.rs
+@@ -5,7 +5,11 @@ use common::{
+ use common_base::prof_span;
+ use common_ecs::{Job, Origin, Phase, System};
+ use common_net::sync::InterpolatableComponent;
++use specs::shred::ResourceId;
++use specs::World;
++
+ use specs::{
++
+     Entities, ParJoin, Read, ReadStorage, SystemData, WriteStorage, prelude::ParallelIterator,
+     shred,
+ };
+diff --git c/common/systems/src/melee.rs w/common/systems/src/melee.rs
+index c30a8bccc..dc3e0f301 100644
+--- c/common/systems/src/melee.rs
++++ w/common/systems/src/melee.rs
+@@ -22,9 +22,13 @@ use common::{
+ use common_ecs::{Job, Origin, Phase, System};
+ use itertools::Itertools;
+ use specs::{
++
+     Entities, Join, LendJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage, shred,
+ };
+ use vek::*;
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ event_emitters! {
+     struct ReadAttackEvents[AttackEmitters] {
+diff --git c/common/systems/src/phys/mod.rs w/common/systems/src/phys/mod.rs
+index f7ff47348..b03d17841 100644
+--- c/common/systems/src/phys/mod.rs
++++ w/common/systems/src/phys/mod.rs
+@@ -24,9 +24,12 @@ use common_base::{prof_span, span};
+ use common_ecs::{Job, Origin, ParMode, Phase, PhysicsMetrics, System};
+ use rayon::iter::ParallelIterator;
+ use specs::{
++
+     Entities, Join, LendJoin, ParJoin, Read, ReadExpect, ReadStorage, SystemData, Write,
+     WriteExpect, WriteStorage, shred,
+ };
++use specs::shred::ResourceId;
++use specs::World;
+ use vek::*;
+ 
+ mod collision;
+@@ -985,6 +988,7 @@ impl PhysicsData<'_> {
+                         vel.0 *= (1.0 - fric).powf(read.dt.0 * 60.0);
+ 
+                         use common::terrain::{Block, BlockKind};
++
+                         // Fake the train being sat on the ground
+                         physics_state.on_ground = Some(Block::new(BlockKind::Rock, Rgb::zero()));
+                         physics_state.in_fluid = Some(Fluid::Air {
+diff --git c/common/systems/src/pool.rs w/common/systems/src/pool.rs
+index 4a6f65d10..0106e9e2d 100644
+--- c/common/systems/src/pool.rs
++++ w/common/systems/src/pool.rs
+@@ -21,9 +21,13 @@ use common::{
+ };
+ use common_ecs::{Job, Origin, Phase, System};
+ use specs::{
++
+     Entities, Join, LendJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage, shred,
+ };
+ use vek::*;
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ event_emitters! {
+     struct Events[Emitters] {
+diff --git c/common/systems/src/projectile.rs w/common/systems/src/projectile.rs
+index 3233d89ba..4eaf33bab 100644
+--- c/common/systems/src/projectile.rs
++++ w/common/systems/src/projectile.rs
+@@ -28,9 +28,12 @@ use common_ecs::{Job, Origin, Phase, System};
+ use itertools::Either;
+ use rand::RngExt;
+ use specs::{
++
+     Entities, Entity as EcsEntity, Join, Read, ReadExpect, ReadStorage, SystemData, WriteStorage,
+     shred,
+ };
++use specs::shred::ResourceId;
++use specs::World;
+ use std::{
+     f32::consts::{PI, TAU},
+     time::Duration,
+@@ -410,6 +413,7 @@ impl<'a> System<'a> for Sys {
+                                 if ENABLE_RECURSIVE_FIREWORKS {
+                                     use common::{comp::LightEmitter, event::ShootEvent};
+                                     use std::f32::consts::PI;
++
+                                     // Note that if the expected fireworks per firework is > 1, this
+                                     // will eventually cause
+                                     // enough server lag that more players can't log in.
+diff --git c/common/systems/src/shockwave.rs w/common/systems/src/shockwave.rs
+index 9e703492e..2c9b375b0 100644
+--- c/common/systems/src/shockwave.rs
++++ w/common/systems/src/shockwave.rs
+@@ -22,6 +22,9 @@ use common::{
+ use common_ecs::{Job, Origin, Phase, System};
+ use rand::RngExt;
+ use specs::{Entities, Join, LendJoin, Read, ReadStorage, SystemData, WriteStorage, shred};
++use specs::shred::ResourceId;
++use specs::World;
++
+ use vek::*;
+ 
+ event_emitters! {
+diff --git c/common/systems/src/stats.rs w/common/systems/src/stats.rs
+index 3d0b651aa..6486bd170 100644
+--- c/common/systems/src/stats.rs
++++ w/common/systems/src/stats.rs
+@@ -10,6 +10,9 @@ use common::{
+ };
+ use common_ecs::{Job, Origin, Phase, System};
+ use specs::{Entities, LendJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage, shred};
++use specs::shred::ResourceId;
++use specs::World;
++
+ 
+ const ENERGY_REGEN_ACCEL: f32 = 1.0;
+ const SIT_ENERGY_REGEN_ACCEL: f32 = 2.5;
