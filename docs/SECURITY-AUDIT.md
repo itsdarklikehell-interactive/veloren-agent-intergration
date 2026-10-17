@@ -103,6 +103,6 @@ With the dashboard bound to `0.0.0.0:5000` in Compose, stdout/stderr is captured
 
 ## Commit
 
-- Commit: `<commit-hash-filled-after-commit>`
-- Files: `.gitignore`, `web/app.py`, `web/static/app.js`, `web/templates/dashboard.html`, `web/templates/viewport.html`, `docs/docker-compose.md`, `docs/SECURITY-AUDIT.md`, plus removal of `target/`, `web/agent.log`, `web/__pycache__/` from tracking.
-- Note: unrelated pre-existing working-tree changes (`Dockerfile.server` mold package, README viewport section, `docs/troubleshooting.md`, `src/lib.rs` patrol/wander constants) were left unstaged and are not part of this audit commit.
+- Audit fixes (F1/F2 remediated, F3-F7 verified): `8970a8c` — `.gitignore`, `web/app.py`, `web/static/app.js`, `web/templates/dashboard.html`, `web/templates/viewport.html`, `docs/docker-compose.md`, `docs/SECURITY-AUDIT.md`, plus removal of `target/`, `web/agent.log`, `web/__pycache__/` from tracking.
+- Follow-up refinements (localStorage key prompt on 401, `web/*.log` ignore, dead viewport key-display removed): `0f00f74`.
+- Note: unrelated pre-existing feature work (`Dockerfile.server` mold package, README viewport section, `docs/troubleshooting.md`, `src/lib.rs` patrol/wander constants) lives in `8970a8c`/`0f00f74`'s tree but is not part of this audit; `src/lib.rs` has further unstaged churn left out of these commits.
