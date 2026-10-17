@@ -524,5 +524,773 @@
       });
     }
     startPolling();
+    initViewport();
+
   });
 })();
+
+// ===========================================================================
+// Live viewport — SVG telemetry charts, agent status badges, zoom indicator.
+// Only initializes on /viewport (canvas element present). Public endpoints only.
+
+var VP_POLL = 1000;
+var VP_TRAIL = 2000;
+var VP_MAX_POINTS = 200;
+
+var vpHistory = { health: [], speed: [], entities: [] };
+var vpLastPos = null;   // {x, y, t}
+var vpLastSpeed = null;
+
+function vpSetBadge(id, text, state) {
+  var node = el(id);
+  if (!node) return;
+  node.className = "badge" + (state ? " " + state : "");
+  node.textContent = text;
+}
+
+function vpZoomUpdate() {
+  vpSetBadge("vp-badge-zoom", "zoom: " + camScale.toFixed(2) + "\u00d7", "");
+}
+
+function vpChartSingle(id, series, getY, colorClass, dash) {
+  var svg = el(id);
+  if (!svg) return;
+  var pad = { l: 22, r: 6, t: 8, b: 16 };
+  var w = 100, h = 100;
+  var pts = series.filter(function (s) { return typeof getY(s) === "number"; });
+  if (pts.length < 2) { svg.innerHTML = ""; return; }
+  var vals = pts.map(getY);
+  var vmin = Math.min.apply(null, vals);
+  var vmax = Math.max.apply(null, vals);
+  var range = vmax - vmin || 1;
+  var top = pad.t, bottom = h - pad.b, left = pad.l, right = w - pad.r;
+  var parts = [];
+  [vmin, vmin + range / 2, vmax].forEach(function (v) {
+    var y = bottom - ((v - vmin) / range) * (bottom - top);
+    parts.push('<line x1="' + left + '" y1="' + y + '" x2="' + right + '" y2="' + y + '" class="gridline"/>');
+    parts.push('<text x="' + (left - 6) + '" y="' + (y + 3) + '" text-anchor="end" class="chart-axis">' + v.toFixed(2) + '</text>');
+  });
+  var path = pts.map(function (p, i) {
+    return (i === 0 ? "M" : "L") +
+      (left + (i / Math.max(1, pts.length - 1)) * (right - left)) + "," +
+      (bottom - ((getY(p) - vmin) / range) * (bottom - top));
+  }).join(" ");
+  parts.push('<path d="' + path + '" class="line ' + colorClass + '"' +
+    (dash ? ' stroke-dasharray="' + dash + '"' : '') + '/>');
+  svg.innerHTML = parts.join("");
+}
+
+function vpChartHealth() {
+  var svg = el("vp-chart-health");
+  if (!svg) return;
+  var pad = { l: 22, r: 6, t: 8, b: 16 };
+  var w = 100, h = 100;
+  var cur = vpHistory.health.filter(function (p) { return typeof p.c === "number"; });
+  var mx = vpHistory.health.filter(function (p) { return typeof p.m === "number"; });
+  if (cur.length < 2) { svg.innerHTML = ""; return; }
+  var all = cur.map(function (p) { return p.c; }).concat(mx.map(function (p) { return p.m; }));
+  var vmin = Math.min.apply(null, all);
+  var vmax = Math.max.apply(null, all);
+  var range = vmax - vmin || 1;
+  var top = pad.t, bottom = h - pad.b, left = pad.l, right = w - pad.r;
+  var parts = [];
+  [vmin, vmin + range / 2, vmax].forEach(function (v) {
+    var y = bottom - ((v - vmin) / range) * (bottom - top);
+    parts.push('<line x1="' + left + '" y1="' + y + '" x2="' + right + '" y2="' + y + '" class="gridline"/>');
+    parts.push('<text x="' + (left - 6) + '" y="' + (y + 3) + '" text-anchor="end" class="chart-axis">' + v.toFixed(0) + '</text>');
+  });
+  var addLine = function (getY, cls, dash) {
+    var path = cur.map(function (p, i) {
+      var v = getY(p);
+      if (typeof v !== "number") return null;
+      return (i === 0 ? "M" : "L") +
+        (left + (i / Math.max(1, cur.length - 1)) * (right - left)) + "," +
+        (bottom - ((v - vmin) / range) * (bottom - top));
+    }).filter(function (p) { return p !== null; }).join(" ");
+    if (!path) return;
+    parts.push('<path d="' + path + '" class="line ' + cls + '"' +
+      (dash ? ' stroke-dasharray="' + dash + '"' : '') + '/>');
+  };
+  addLine(function (p) { return p.c; }, "line-health");
+  addLine(function (p) { return p.m; }, "line-max", "4 3");
+  svg.innerHTML = parts.join("");
+}
+
+function vpRenderCharts(obs) {
+  var now = Date.now();
+  var health = typeof obs.health_current === "number" ? obs.health_current : null;
+  var hmax = typeof obs.health_maximum === "number" ? obs.health_maximum : null;
+  vpHistory.health.push({ t: now, c: health, m: hmax });
+  vpHistory.speed.push({ t: now, s: vpLastSpeed });
+  vpHistory.entities.push({ t: now, e: (obs.registered && !obs.is_dead) ? 1 : 0 });
+  [vpHistory.health, vpHistory.speed, vpHistory.entities].forEach(function (arr) {
+    if (arr.length > VP_MAX_POINTS) arr.shift();
+  });
+  vpChartHealth();
+  vpChartSingle("vp-chart-speed", vpHistory.speed, function (p) { return p.s; }, "line-speed");
+  vpChartSingle("vp-chart-entities", vpHistory.entities, function (p) { return p.e; }, "line-entities");
+  var vHealth = el("vp-chart-health-vals");
+  var vSpeed = el("vp-chart-speed-vals");
+  var vEnt = el("vp-chart-entities-vals");
+  if (vHealth) {
+    vHealth.innerHTML = health === null ? "— / —" :
+      health.toFixed(1) + " <span class=\"viewport-chart-unit\">/</span> " +
+      (hmax === null ? "—" : hmax.toFixed(1)) + " <span class=\"viewport-chart-unit\">HP</span>";
+  }
+  if (vSpeed) vSpeed.innerHTML = vpLastSpeed === null ? "—" : vpLastSpeed.toFixed(1) + " <span class=\"viewport-chart-unit\">units/s</span>";
+  if (vEnt) vEnt.innerHTML = ((obs.registered && !obs.is_dead) ? "1" : "0") + " <span class=\"viewport-chart-unit\">tracked</span>";
+}
+
+function vpRenderBadges(obs) {
+  var registered = !!obs.registered;
+  var dead = !!obs.is_dead;
+  vpSetBadge("vp-badge-server", registered ? "server: connected" : "server: disconnected",
+    registered ? "up" : "down");
+  vpSetBadge("vp-badge-agent", registered ? (dead ? "agent: dead" : "agent: in-game") : "agent: connecting",
+    registered ? (dead ? "down" : "up") : "unknown");
+  if (typeof obs.health_current === "number" && typeof obs.health_maximum === "number") {
+    vpSetBadge("vp-badge-health", "health: " + obs.health_current.toFixed(0) + "/" + obs.health_maximum.toFixed(0),
+      dead ? "down" : "up");
+  } else {
+    vpSetBadge("vp-badge-health", "health: —", "");
+  }
+  vpSetBadge("vp-badge-reg", registered ? "registered: yes" : "registered: no", registered ? "up" : "down");
+}
+
+function formatCoord(n) {
+  return typeof n === "number" ? n.toFixed(2) : "—";
+}
+
+// ---- viewport canvas/map state ----
+var vCanvas, vMinimap, vCtx, vMmCtx, vEmpty;
+var vElTick, vElX, vElY, vElZ, vElHealth, vElRegistered, vElPresence, vElUpdated;
+var vElEvents, vElChat, vElBtnFollow;
+var vTrail = [];
+var vLatest = null;
+var vShowTrail = true;
+var vCamX = 0, vCamY = 0, vCamScale = 1;
+var vFollowAgent = false;
+var vCanvasW = 0, vCanvasH = 0;
+var vDead = false;
+
+var vIsDragging = false;
+var vDragStartClient = { x: 0, y: 0 };
+var vTouchLast = null;
+var vLastTouchDist = 0;
+
+var V_MIN_ZOOM = 0.05;
+var V_MAX_ZOOM = 16;
+
+function vClamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function vDpr() { return window.devicePixelRatio || 1; }
+function vCanvasRect() { return vCanvas.getBoundingClientRect(); }
+
+function vScreenToWorld(cx, cy) {
+  var r = vCanvasRect();
+  var d = vDpr();
+  var ix = (cx - r.left) * d;
+  var iy = (cy - r.top) * d;
+  return {
+    x: vCamX + (ix - vCanvasW / 2) / vCamScale,
+    y: vCamY + (iy - vCanvasH / 2) / vCamScale,
+  };
+}
+
+function vResize() {
+  var rect = vCanvas.parentElement.getBoundingClientRect();
+  var d = vDpr();
+  vCanvasW = rect.width * d;
+  vCanvasH = rect.height * d;
+  vCanvas.width = vCanvasW;
+  vCanvas.height = vCanvasH;
+  vCanvas.style.width = rect.width + "px";
+  vCanvas.style.height = rect.height + "px";
+  vCtx.setTransform(d, 0, 0, d, 0, 0);
+  vCamScale = 1;
+  vCamX = 0;
+  vCamY = 0;
+  var mr = vMinimap.getBoundingClientRect();
+  vMinimap.width = mr.width * d;
+  vMinimap.height = mr.height * d;
+  vMmCtx.setTransform(d, 0, 0, d, 0, 0);
+  vpZoomUpdate();
+}
+
+function vWorldToCanvas(wx, wy) {
+  return {
+    x: (wx - vCamX) * vCamScale + vCanvasW / 2,
+    y: (wy - vCamY) * vCamScale + vCanvasH / 2,
+  };
+}
+
+function vCenterOn(wx, wy) {
+  vCamX = wx;
+  vCamY = wy;
+}
+
+function vFitToTrail() {
+  if (vTrail.length < 2) return;
+  var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (var i = 0; i < vTrail.length; i++) {
+    var p = vTrail[i];
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  var pad = 40;
+  var spanX = maxX - minX + pad * 2;
+  var spanY = maxY - minY + pad * 2;
+  var scale = Math.min(vCanvasW / spanX, vCanvasH / spanY) * 0.9;
+  vCamScale = Math.max(0.05, Math.min(scale, 5));
+  vCamX = (minX + maxX) / 2;
+  vCamY = (minY + maxY) / 2;
+  vpZoomUpdate();
+}
+
+function vObservedBounds() {
+  var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (var i = 0; i < vTrail.length; i++) {
+    var p = vTrail[i];
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  if (!vTrail.length && vLatest) {
+    minX = maxX = vLatest.x;
+    minY = maxY = vLatest.y;
+  }
+  if (!vTrail.length && !vLatest) {
+    return { minX: -200, minY: -200, maxX: 200, maxY: 200 };
+  }
+  var pad = 60;
+  return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+}
+
+function vDrawGrid() {
+  vCtx.save();
+  vCtx.strokeStyle = "#1f2937";
+  vCtx.lineWidth = 1 / vDpr();
+  vCtx.beginPath();
+  var grid = 100;
+  var startX = Math.floor((vCamX - vCanvasW / (2 * vCamScale)) / grid) * grid;
+  var startY = Math.floor((vCamY - vCanvasH / (2 * vCamScale)) / grid) * grid;
+  var endX = Math.ceil((vCamX + vCanvasW / (2 * vCamScale)) / grid) * grid;
+  var endY = Math.ceil((vCamY + vCanvasH / (2 * vCamScale)) / grid) * grid;
+  var ch = vCanvasH / vDpr();
+  var cw = vCanvasW / vDpr();
+  for (var gx = startX; gx <= endX; gx += grid) {
+    var p = vWorldToCanvas(gx, 0);
+    vCtx.moveTo(p.x, 0);
+    vCtx.lineTo(p.x, ch);
+  }
+  for (var gy = startY; gy <= endY; gy += grid) {
+    var p = vWorldToCanvas(0, gy);
+    vCtx.moveTo(0, p.y);
+    vCtx.lineTo(cw, p.y);
+  }
+  vCtx.stroke();
+  vCtx.restore();
+}
+
+function vDrawTrail() {
+  if (!vShowTrail || vTrail.length < 2) return;
+  vCtx.save();
+  vCtx.lineWidth = 3 / vDpr();
+  vCtx.lineCap = "round";
+  vCtx.lineJoin = "round";
+  for (var i = 1; i < vTrail.length; i++) {
+    var a = vWorldToCanvas(vTrail[i - 1].x, vTrail[i - 1].y);
+    var b = vWorldToCanvas(vTrail[i].x, vTrail[i].y);
+    var alpha = i / vTrail.length;
+    vCtx.strokeStyle = "rgba(59, 130, 246, " + (0.15 + 0.55 * alpha) + ")";
+    vCtx.beginPath();
+    vCtx.moveTo(a.x, a.y);
+    vCtx.lineTo(b.x, b.y);
+    vCtx.stroke();
+  }
+  vCtx.restore();
+}
+
+function vDrawAgent(wx, wy, heading) {
+  var d = vDpr();
+  var size = 12 / d;
+  var p = vWorldToCanvas(wx, wy);
+  vCtx.save();
+  vCtx.translate(p.x, p.y);
+  if (heading) vCtx.rotate(heading);
+  vCtx.fillStyle = "#3b82f6";
+  vCtx.beginPath();
+  vCtx.moveTo(0, -size * 1.5);
+  vCtx.lineTo(size * 0.8, size * 0.8);
+  vCtx.lineTo(size * 0.3, size * 0.3);
+  vCtx.lineTo(-size * 0.3, size * 0.3);
+  vCtx.lineTo(-size * 0.8, size * 0.8);
+  vCtx.closePath();
+  vCtx.fill();
+  vCtx.fillStyle = "#ffffff";
+  vCtx.beginPath();
+  vCtx.arc(0, 0, size * 0.5, 0, Math.PI * 2);
+  vCtx.fill();
+  if (vDead) {
+    vCtx.strokeStyle = "#ef4444";
+    vCtx.lineWidth = 2 / d;
+    vCtx.beginPath();
+    vCtx.arc(0, 0, size * 1.4, 0, Math.PI * 2);
+    vCtx.stroke();
+  }
+  vCtx.restore();
+}
+
+function vDrawMinimap() {
+  var d = vDpr();
+  var mw = vMinimap.clientWidth;
+  var mh = vMinimap.clientHeight;
+  if (!mw || !mh) return;
+  vMmCtx.clearRect(0, 0, mw, mh);
+  var bounds = vObservedBounds();
+  var spanX = bounds.maxX - bounds.minX;
+  var spanY = bounds.maxY - bounds.minY;
+  var mmScale = Math.min(mw / spanX, mh / spanY) * 0.92;
+  var mmOx = (bounds.minX + bounds.maxX) / 2;
+  var mmOy = (bounds.minY + bounds.maxY) / 2;
+  function vMmPos(wx, wy) {
+    return {
+      x: (wx - mmOx) * mmScale + mw / 2,
+      y: (wy - mmOy) * mmScale + mh / 2,
+    };
+  }
+  vMmCtx.strokeStyle = "#334155";
+  vMmCtx.lineWidth = 1 / d;
+  vMmCtx.strokeRect(
+    (bounds.minX - mmOx) * mmScale + mw / 2,
+    (bounds.minY - mmOy) * mmScale + mh / 2,
+    spanX * mmScale,
+    spanY * mmScale
+  );
+  vMmCtx.fillStyle = "#64748b";
+  vMmCtx.font = "10px " + (getComputedStyle(document.documentElement).fontFamily || "system-ui");
+  vMmCtx.fillText("world bounds", 6, 14);
+  var vwW = vCanvasW / vCamScale;
+  var vwH = vCanvasH / vCamScale;
+  var vwX = vCamX - vwW / 2;
+  var vwY = vCamY - vwH / 2;
+  var vp = vMmPos(vwX, vwY);
+  vMmCtx.strokeStyle = "#3b82f6";
+  vMmCtx.lineWidth = 1.5 / d;
+  vMmCtx.setLineDash([4 / d, 2 / d]);
+  vMmCtx.strokeRect(vp.x, vp.y, vwW * mmScale, vwH * mmScale);
+  vMmCtx.setLineDash([]);
+  if (vLatest) {
+    var a = vMmPos(vLatest.x, vLatest.y);
+    vMmCtx.fillStyle = "#3b82f6";
+    vMmCtx.beginPath();
+    vMmCtx.arc(a.x, a.y, 3 / d, 0, Math.PI * 2);
+    vMmCtx.fill();
+    vMmCtx.strokeStyle = "#ffffff";
+    vMmCtx.lineWidth = 1 / d;
+    vMmCtx.stroke();
+  }
+}
+
+function vDraw() {
+  if (vFollowAgent && vLatest) {
+    vCenterOn(vLatest.x, vLatest.y);
+  }
+  vCtx.clearRect(0, 0, vCanvasW / vDpr(), vCanvasH / vDpr());
+  vDrawGrid();
+  vDrawTrail();
+  if (vLatest) {
+    vDrawAgent(vLatest.x, vLatest.y, vLatest.heading || 0);
+  }
+  vDrawMinimap();
+  requestAnimationFrame(vDraw);
+}
+
+function vStartDrag(cx, cy) {
+  vIsDragging = true;
+  vDragStartClient = { x: cx, y: cy };
+  vCanvas.style.cursor = "grabbing";
+}
+
+function vEndDrag() {
+  vIsDragging = false;
+  vCanvas.style.cursor = "crosshair";
+}
+
+vCanvas.addEventListener("mousedown", function (e) {
+  if (e.button !== 0) return;
+  vStartDrag(e.clientX, e.clientY);
+});
+window.addEventListener("mousemove", function (e) {
+  if (!vIsDragging) return;
+  var d = vDpr();
+  var dx = (e.clientX - vDragStartClient.x) * d / vCamScale;
+  var dy = (e.clientY - vDragStartClient.y) * d / vCamScale;
+  vCamX -= dx;
+  vCamY -= dy;
+  vDragStartClient = { x: e.clientX, y: e.clientY };
+  vFollowAgent = false;
+  vElBtnFollow.setAttribute("aria-pressed", "false");
+  vElBtnFollow.classList.remove("on");
+});
+window.addEventListener("mouseup", vEndDrag);
+vCanvas.addEventListener("mouseleave", vEndDrag);
+
+vCanvas.addEventListener("wheel", function (e) {
+  e.preventDefault();
+  var d = vDpr();
+  var r = vCanvasRect();
+  var before = vScreenToWorld(e.clientX, e.clientY);
+  var factor = Math.pow(0.996, e.deltaY);
+  var s = vCamScale * factor;
+  s = vClamp(s, V_MIN_ZOOM, V_MAX_ZOOM);
+  vCamScale = s;
+  vCamX = before.x - (e.clientX - r.left - r.width / 2) * d / vCamScale;
+  vCamY = before.y - (e.clientY - r.top - r.height / 2) * d / vCamScale;
+  vpZoomUpdate();
+}, { passive: false });
+
+vCanvas.addEventListener("touchstart", function (e) {
+  e.preventDefault();
+  var t = e.touches;
+  if (t.length === 2) {
+    vLastTouchDist = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    vTouchLast = null;
+  } else if (t.length === 1) {
+    vTouchLast = { x: t[0].clientX, y: t[0].clientY };
+    vLastTouchDist = 0;
+  }
+}, { passive: false });
+
+vCanvas.addEventListener("touchmove", function (e) {
+  e.preventDefault();
+  var t = e.touches;
+  var d = vDpr();
+  var r = vCanvasRect();
+  if (t.length === 2 && vLastTouchDist > 0) {
+    var dist = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    var mx = (t[0].clientX + t[1].clientX) / 2;
+    var my = (t[0].clientY + t[1].clientY) / 2;
+    var before = vScreenToWorld(mx, my);
+    var s = vCamScale * (dist / vLastTouchDist);
+    s = vClamp(s, V_MIN_ZOOM, V_MAX_ZOOM);
+    vCamScale = s;
+    vCamX = before.x - (mx - r.left - r.width / 2) * d / vCamScale;
+    vCamY = before.y - (my - r.top - r.height / 2) * d / vCamScale;
+    vLastTouchDist = dist;
+    vFollowAgent = false;
+    vElBtnFollow.setAttribute("aria-pressed", "false");
+    vElBtnFollow.classList.remove("on");
+    vpZoomUpdate();
+  } else if (t.length === 1 && vTouchLast) {
+    var dx = (vTouchLast.x - t[0].clientX) * d / vCamScale;
+    var dy = (vTouchLast.y - t[0].clientY) * d / vCamScale;
+    vCamX += dx;
+    vCamY += dy;
+    vTouchLast = { x: t[0].clientX, y: t[0].clientY };
+    vFollowAgent = false;
+    vElBtnFollow.setAttribute("aria-pressed", "false");
+    vElBtnFollow.classList.remove("on");
+  }
+}, { passive: false });
+
+vCanvas.addEventListener("touchend", function (e) {
+  e.preventDefault();
+  var t = e.touches;
+  if (t.length === 0) {
+    vTouchLast = null;
+    vLastTouchDist = 0;
+  } else if (t.length === 1) {
+    vTouchLast = { x: t[0].clientX, y: t[0].clientY };
+    vLastTouchDist = 0;
+  }
+}, { passive: false });
+
+vCanvas.addEventListener("touchcancel", function () {
+  vTouchLast = null;
+  vLastTouchDist = 0;
+});
+
+vMinimap.addEventListener("mousedown", function (e) {
+  if (e.button !== 0) return;
+  var d = vDpr();
+  var r = vMinimap.getBoundingClientRect();
+  var bounds = vObservedBounds();
+  var spanX = bounds.maxX - bounds.minX;
+  var spanY = bounds.maxY - bounds.minY;
+  var mmScale = Math.min(r.width / spanX, r.height / spanY) * 0.92;
+  var mmOx = (bounds.minX + bounds.maxX) / 2;
+  var mmOy = (bounds.minY + bounds.maxY) / 2;
+  var wx = mmOx + ((e.clientX - r.left) * d - r.width / 2) / mmScale;
+  var wy = mmOy + ((e.clientY - r.top) * d - r.height / 2) / mmScale;
+  vCenterOn(wx, wy);
+  vFollowAgent = false;
+  vElBtnFollow.setAttribute("aria-pressed", "false");
+  vElBtnFollow.classList.remove("on");
+});
+
+function vRenderHud(obs) {
+  if (!obs) return;
+  vElTick.textContent = obs.tick !== undefined ? obs.tick : "—";
+  vElX.textContent = formatCoord(obs.x);
+  vElY.textContent = formatCoord(obs.y);
+  vElZ.textContent = formatCoord(obs.z);
+
+  var hc = obs.health_current;
+  var hm = obs.health_maximum;
+  if (hc !== undefined && hm !== undefined) {
+    vElHealth.textContent = hc.toFixed(1) + " / " + hm.toFixed(1);
+    vElHealth.className = "value " + (obs.is_dead ? "bad" : "ok");
+  } else {
+    vElHealth.textContent = "— / —";
+    vElHealth.className = "value";
+  }
+
+  vElRegistered.textContent = obs.registered ? "yes" : "no";
+  vElRegistered.className = "value " + (obs.registered ? "ok" : "bad");
+  vElPresence.textContent = obs.presence || "—";
+
+  var now = new Date().toLocaleTimeString();
+  vElUpdated.textContent = "Updated " + now;
+
+  vpRenderBadges(obs);
+  vpRenderCharts(obs);
+}
+
+function vRenderEvents(obs) {
+  var events = obs.events || [];
+  if (events.length === 0) {
+    vElEvents.textContent = "no recent events";
+    return;
+  }
+  vElEvents.innerHTML = events
+    .slice()
+    .reverse()
+    .map(function (e) {
+      return '<div class="viewport-event event"><span class="time">[event]</span> ' +
+        escapeHtml(String(e)) + '</div>';
+    })
+    .join("");
+}
+
+function vRenderChat(obs) {
+  var chat = obs.chat || [];
+  if (chat.length === 0) {
+    vElChat.textContent = "no recent chat";
+    return;
+  }
+  vElChat.innerHTML = chat
+    .slice()
+    .reverse()
+    .map(function (c) {
+      return '<div class="viewport-event viewport-chat"><span class="time">[chat]</span> ' +
+        escapeHtml(String(c)) + '</div>';
+    })
+    .join("");
+}
+
+function pollViewportLatest() {
+  request("/api/viewport/latest").then(function (data) {
+    if (!data.ok) {
+      vEmpty.style.display = "block";
+      return;
+    }
+    vEmpty.style.display = "none";
+    vLatest = data;
+    vDead = !!data.is_dead;
+    vRenderHud(data);
+    vRenderEvents(data);
+    vRenderChat(data);
+
+    var now = Date.now();
+    if (vpLastPos) {
+      var dt = (now - vpLastPos.t) / 1000;
+      var dist = Math.hypot(data.x - vpLastPos.x, data.y - vpLastPos.y);
+      vpLastSpeed = (dt > 0 && dist < 5000) ? dist / dt : null;
+    } else {
+      vpLastSpeed = null;
+    }
+    vpLastPos = { x: data.x, y: data.y, t: now };
+
+    var lastTrail = vTrail[vTrail.length - 1];
+    if (!lastTrail || lastTrail.x !== data.x || lastTrail.y !== data.y) {
+      vTrail.push({ x: data.x, y: data.y, z: data.z, tick: data.tick });
+      if (vTrail.length > 500) vTrail.shift();
+    }
+  }).catch(function () {});
+}
+
+function pollViewportTrail() {
+  request("/api/viewport/trail?limit=300").then(function (data) {
+    if (data.ok && data.trail && data.trail.length > 0) {
+      var serverTicks = new Set(vTrail.map(function (t) { return t.tick; }));
+      for (var i = 0; i < data.trail.length; i++) {
+        var p = data.trail[i];
+        if (!serverTicks.has(p.tick)) {
+          vTrail.push(p);
+        }
+      }
+      if (vTrail.length > 500) vTrail = vTrail.slice(-500);
+      if (vCamX === 0 && vCamY === 0 && vTrail.length >= 2) vFitToTrail();
+    }
+  }).catch(function () {});
+}
+
+function vInitViewport() {
+  if (!el("viewport-canvas")) return;
+  vCanvas = document.getElementById("viewport-canvas");
+  vMinimap = document.getElementById("viewport-minimap");
+  vCtx = vCanvas.getContext("2d");
+  vMmCtx = vMinimap.getContext("2d");
+  vEmpty = document.getElementById("viewport-empty");
+
+  vElTick = el("vp-tick");
+  vElX = el("vp-x");
+  vElY = el("vp-y");
+  vElZ = el("vp-z");
+  vElHealth = el("vp-health");
+  vElRegistered = el("vp-registered");
+  vElPresence = el("vp-presence");
+  vElUpdated = el("vp-updated");
+  vElEvents = el("vp-events");
+  vElChat = el("vp-chat");
+  vElBtnFollow = el("vp-btn-follow");
+
+  vResize();
+  window.addEventListener("resize", vResize);
+
+  vCanvas.addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    vStartDrag(e.clientX, e.clientY);
+  });
+  window.addEventListener("mousemove", function (e) {
+    if (!vIsDragging) return;
+    var d = vDpr();
+    var dx = (e.clientX - vDragStartClient.x) * d / vCamScale;
+    var dy = (e.clientY - vDragStartClient.y) * d / vCamScale;
+    vCamX -= dx;
+    vCamY -= dy;
+    vDragStartClient = { x: e.clientX, y: e.clientY };
+    vFollowAgent = false;
+    vElBtnFollow.setAttribute("aria-pressed", "false");
+    vElBtnFollow.classList.remove("on");
+  });
+  window.addEventListener("mouseup", vEndDrag);
+  vCanvas.addEventListener("mouseleave", vEndDrag);
+
+  vCanvas.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var d = vDpr();
+    var r = vCanvasRect();
+    var before = vScreenToWorld(e.clientX, e.clientY);
+    var factor = Math.pow(0.996, e.deltaY);
+    var s = vCamScale * factor;
+    s = vClamp(s, V_MIN_ZOOM, V_MAX_ZOOM);
+    vCamScale = s;
+    vCamX = before.x - (e.clientX - r.left - r.width / 2) * d / vCamScale;
+    vCamY = before.y - (e.clientY - r.top - r.height / 2) * d / vCamScale;
+    vpZoomUpdate();
+  }, { passive: false });
+
+  vCanvas.addEventListener("touchstart", function (e) {
+    e.preventDefault();
+    var t = e.touches;
+    if (t.length === 2) {
+      vLastTouchDist = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      vTouchLast = null;
+    } else if (t.length === 1) {
+      vTouchLast = { x: t[0].clientX, y: t[0].clientY };
+      vLastTouchDist = 0;
+    }
+  }, { passive: false });
+
+  vCanvas.addEventListener("touchmove", function (e) {
+    e.preventDefault();
+    var t = e.touches;
+    var d = vDpr();
+    var r = vCanvasRect();
+    if (t.length === 2 && vLastTouchDist > 0) {
+      var dist = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      var mx = (t[0].clientX + t[1].clientX) / 2;
+      var my = (t[0].clientY + t[1].clientY) / 2;
+      var before = vScreenToWorld(mx, my);
+      var s = vCamScale * (dist / vLastTouchDist);
+      s = vClamp(s, V_MIN_ZOOM, V_MAX_ZOOM);
+      vCamScale = s;
+      vCamX = before.x - (mx - r.left - r.width / 2) * d / vCamScale;
+      vCamY = before.y - (my - r.top - r.height / 2) * d / vCamScale;
+      vLastTouchDist = dist;
+      vFollowAgent = false;
+      vElBtnFollow.setAttribute("aria-pressed", "false");
+      vElBtnFollow.classList.remove("on");
+      vpZoomUpdate();
+    } else if (t.length === 1 && vTouchLast) {
+      var dx = (vTouchLast.x - t[0].clientX) * d / vCamScale;
+      var dy = (vTouchLast.y - t[0].clientY) * d / vCamScale;
+      vCamX += dx;
+      vCamY += dy;
+      vTouchLast = { x: t[0].clientX, y: t[0].clientY };
+      vFollowAgent = false;
+      vElBtnFollow.setAttribute("aria-pressed", "false");
+      vElBtnFollow.classList.remove("on");
+    }
+  }, { passive: false });
+
+  vCanvas.addEventListener("touchend", function (e) {
+    e.preventDefault();
+    var t = e.touches;
+    if (t.length === 0) {
+      vTouchLast = null;
+      vLastTouchDist = 0;
+    } else if (t.length === 1) {
+      vTouchLast = { x: t[0].clientX, y: t[0].clientY };
+      vLastTouchDist = 0;
+    }
+  }, { passive: false });
+
+  vCanvas.addEventListener("touchcancel", function () {
+    vTouchLast = null;
+    vLastTouchDist = 0;
+  });
+
+  vMinimap.addEventListener("mousedown", function (e) {
+    if (e.button !== 0) return;
+    var d = vDpr();
+    var r = vMinimap.getBoundingClientRect();
+    var bounds = vObservedBounds();
+    var spanX = bounds.maxX - bounds.minX;
+    var spanY = bounds.maxY - bounds.minY;
+    var mmScale = Math.min(r.width / spanX, r.height / spanY) * 0.92;
+    var mmOx = (bounds.minX + bounds.maxX) / 2;
+    var mmOy = (bounds.minY + bounds.maxY) / 2;
+    var wx = mmOx + ((e.clientX - r.left) * d - r.width / 2) / mmScale;
+    var wy = mmOy + ((e.clientY - r.top) * d - r.height / 2) / mmScale;
+    vCenterOn(wx, wy);
+    vFollowAgent = false;
+    vElBtnFollow.setAttribute("aria-pressed", "false");
+    vElBtnFollow.classList.remove("on");
+  });
+
+  document.getElementById("vp-btn-center").addEventListener("click", function () {
+    if (vLatest) vCenterOn(vLatest.x, vLatest.y);
+  });
+  vElBtnFollow.addEventListener("click", function () {
+    vFollowAgent = !vFollowAgent;
+    var on = vFollowAgent;
+    this.setAttribute("aria-pressed", String(on));
+    this.classList.toggle("on", on);
+    if (on && vLatest) vCenterOn(vLatest.x, vLatest.y);
+  });
+  document.getElementById("vp-btn-trail").addEventListener("click", function () {
+    vShowTrail = !vShowTrail;
+    this.textContent = vShowTrail ? "Hide trail" : "Show trail";
+  });
+
+  vDraw();
+  pollViewportLatest();
+  pollViewportTrail();
+  setInterval(pollViewportLatest, VP_POLL);
+  setInterval(pollViewportTrail, VP_TRAIL);
+}

@@ -217,3 +217,131 @@ footer.bar { font-size: 12px; padding: 8px 18px; }
   .bar .chips { gap: 6px; }
   .chip { font-size: 11px; padding: 3px 8px; }
 }
+
+/* ---- Live viewport: status badges, telemetry charts, zoom indicator ---- */
+.viewport-shell .viewport-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.viewport-shell .badge {
+  padding: 4px 10px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-size: 11.5px;
+  font-family: var(--mono);
+}
+.viewport-shell .badge-up {
+  color: var(--ok);
+  border-color: rgba(34, 197, 94, 0.35);
+  background: #0c131c;
+}
+.viewport-shell .badge-down {
+  color: var(--bad);
+  border-color: rgba(239, 68, 68, 0.35);
+  background: #0c131c;
+}
+.viewport-shell .badge-unknown {
+  color: var(--warn);
+  border-color: rgba(234, 179, 8, 0.35);
+  background: #0c131c;
+}
+
+.viewport-shell .viewport-charts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.viewport-shell .viewport-chart-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.viewport-shell .viewport-chart-card h3 {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.viewport-shell .viewport-chart {
+  width: 100%;
+  height: 120px;
+  display: block;
+  overflow: visible;
+}
+.viewport-shell .viewport-chart .line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.viewport-shell .viewport-chart .line-health {
+  stroke: var(--ok);
+  stroke-width: 2;
+}
+.viewport-shell .viewport-chart .line-max {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+.viewport-shell .viewport-chart .line-speed {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.viewport-shell .viewport-chart .line-entities {
+  stroke: #a5f3fc;
+  stroke-width: 2;
+}
+.viewport-shell .viewport-chart .gridline {
+  stroke: #0f1620;
+  stroke-width: 1;
+}
+.viewport-shell .viewport-chart text.chart-axis {
+  fill: var(--muted);
+  font-size: 9px;
+  font-family: var(--mono);
+}
+.viewport-shell .viewport-chart-vals {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.viewport-shell .viewport-chart-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.viewport-shell .viewport-chart-unit {
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .viewport-shell .viewport-body { flex-direction: column; }
+  .viewport-shell .viewport-map {
+    height: 40vh;
+    min-height: 260px;
+    width: 100%;
+    flex: 0 0 auto;
+  }
+  .viewport-shell .viewport-sidebar {
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    flex: 1;
+    overflow: auto;
+  }
+  .viewport-shell .viewport-charts {
+    grid-template-columns: 1fr;
+    padding: 10px 14px;
+  }
+  .viewport-shell .viewport-chart { height: 110px; }
+  .viewport-shell .viewport-status { gap: 6px; }
+  .viewport-shell .badge { font-size: 10.5px; padding: 3px 8px; }
+}
