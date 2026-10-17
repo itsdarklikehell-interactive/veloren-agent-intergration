@@ -35,6 +35,8 @@ Veloren's engine is deliberately modular: the graphical frontend is entirely dec
 | [Architecture](docs/architecture.md) | System design and data flow |
 | [API Reference](docs/api-reference.md) | JSON commands and observations spec |
 | [Viewport API](docs/viewport-api.md) | Public endpoints for the live viewport (`/api/viewport/latest`, `/api/viewport/trail`) |
+| [Dashboard API](docs/dashboard-api.md) | HTTP API reference for `/api/status`, `/api/agent/command`, `/api/analytics`, `/api/export` |
+| [Live Viewport](docs/live-viewport.md) | User guide for the live viewport page (`/viewport`) |
 | [Troubleshooting](docs/troubleshooting.md) | Known issues and workarounds |
 | [Contributing](docs/contributing.md) | How to contribute to this project |
 | [Wiki Home](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki) | Project wiki (operations, runbooks, recipes) |
@@ -269,6 +271,8 @@ veloren-agent-intergration/
 │   ├── quickstart.md               # Step-by-step getting started
 │   ├── architecture.md             # System design + data flow
 │   ├── api-reference.md            # JSON command/observation spec
+│   ├── dashboard-api.md            # HTTP API reference (/api/status, /api/agent/command, /api/analytics, /api/export)
+│   ├── live-viewport.md            # User guide for the live viewport page
 │   ├── troubleshooting.md          # Known issues + fixes
 │   └── contributing.md             # Contributor guide
 ├── web/
