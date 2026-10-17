@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use specs::WorldExt;
+use specs::{Join, WorldExt};
 use tokio::runtime::Runtime;
 use veloren_client::{
     Client, ClientType, CredentialProvider, Credentials, Event,
@@ -23,6 +23,9 @@ use veloren_common::{
 };
 use serde::{Deserialize, Serialize};
 use vek::{Vec2, Vec3};
+
+mod behavior;
+use crate::behavior::{BehaviorInputs, BehaviorSystem, NEARBY_ENTITY_RADIUS};
 
 /// Observation schema version, emitted as `schema_version` in every JSON observation.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -359,12 +362,9 @@ impl GameConnection for ClientGameConnection {
         let cur = Vec3::new(pos[0], pos[1], pos[2]);
         let mut out = Vec::new();
         let ecs = self.client.state().ecs();
-        let Ok(storage) = ecs.try_read_storage::<comp::Pos>() else { return Vec::new() };
-        let self_entity = self.client.entity();
-        for entity in ecs.entities() {
-            if Some(entity) == self_entity {
-                continue;
-            }
+        let storage = ecs.read_storage::<comp::Pos>();
+        let entities = ecs.entities();
+        for entity in entities.join() {
             if let Some(p) = storage.get(entity) {
                 let d = p.0 - cur;
                 if d.magnitude() < radius {
@@ -508,11 +508,11 @@ pub fn obstacle_avoidance(cur: Vec2<f32>, entities: &[[f32; 3]], radius: f32) ->
         avoid += away / dist * (1.0 - dist / radius);
     }
     if avoid.magnitude() > 0.001 {
-        avoid.normalize()
+        avoid.normalize();
+        avoid
     } else {
         avoid
     }
-}
 
 /// Tiny xorshift PRNG used by wander mode to pick exploration targets without
 /// pulling in an extra dependency.
@@ -531,7 +531,7 @@ impl WanderRng {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;
-        self.state as f64 / u64::MAX as f64 as f32
+        (self.state as f64 / u64::MAX as f64) as f32
     }
 }
 
@@ -543,6 +543,9 @@ fn wander_target(rng: &mut WanderRng, cur: Vec2<f32>, radius: f32) -> [f32; 2] {
     [t.x, t.y]
 }
 
+/// The agent tick loop. Parameterized over a `GameConnection` and an output
+/// sink so production (`src/main.rs`) and integration tests share one code path.
+///
 /// Returns `AgentOutcome::Quit` on a `{"cmd":"quit"}` command, or
 /// `AgentOutcome::ConnectionLost` when the connection dies (tick error or
 /// keepalive watchdog timeout), at which point the caller should reconnect.
@@ -566,10 +569,23 @@ pub fn run_agent<C: GameConnection>(
     // Last known world position [x, y, z], refreshed after each observation.
     let mut last_position: Option<[f32; 3]> = None;
 
-    // Patrol state.
+    // Patrol / wander state.
     let mut patrol_waypoints: Vec<[f32; 2]> = Vec::new();
     let mut patrol_index: usize = 0;
     let mut patrol_active: bool = false;
+    let mut wander_active: bool = false;
+    let mut wander_rng = WanderRng::seed(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0),
+    );
+    // Smoothed movement direction applied while patrolling/wandering.
+    let mut patrol_move_dir: Vec2<f32> = Vec2::zero();
+    // Stuck tracking for the current waypoint (unreachable waypoint detection).
+    let mut waypoint_stuck_ticks: u64 = 0;
+    let mut last_dist_to_target: Option<f32> = None;
+    let mut was_avoiding: bool = false;
 
     // Cooldown (ticks) between automatic chat replies.
     let mut auto_response_cooldown: u64 = 0;
@@ -588,25 +604,110 @@ pub fn run_agent<C: GameConnection>(
             return AgentOutcome::ConnectionLost;
         }
 
-        // Movement resets every tick. Patrol sets a base steering direction
-        // below; an explicit `{"cmd":"move"}` command overrides it when commands drain.
+        // Movement resets every tick. Patrol/wander sets a base steering
+        // direction below; an explicit `{"cmd":"move"}` command overrides it
+        // when commands drain.
         let mut move_dir = Vec2::zero();
 
-        // --- Patrol steering: walk toward the current waypoint ----------
-        if patrol_active && patrol_index < patrol_waypoints.len() {
+        // Observation events emitted this tick (chat events + patrol notes).
+        let mut obs_events: Vec<String> = Vec::new();
+
+        // --- Patrol / wander steering -------------------------------------
+        // `patrol` walks a configured waypoint loop; `wander` continuously
+        // picks fresh random targets near the agent. Both steer through the
+        // same smoothed movement direction with obstacle avoidance.
+        let mut patrolling = (patrol_active || wander_active) && patrol_index < patrol_waypoints.len();
+        if wander_active && last_position.is_some() && patrol_waypoints.is_empty() {
+            if let Some(pos) = last_position {
+                let cur = Vec2::new(pos[0], pos[1]);
+                patrol_waypoints = vec![wander_target(&mut wander_rng, cur, WANDER_RADIUS)];
+                patrol_index = 0;
+            }
+            patrolling = true;
+        }
+
+        if patrolling {
             if let Some(pos) = last_position {
                 let target = Vec2::new(patrol_waypoints[patrol_index][0], patrol_waypoints[patrol_index][1]);
                 let cur = Vec2::new(pos[0], pos[1]);
                 let to_target = target - cur;
                 let dist = to_target.magnitude();
+
+                // Waypoint reached: advance (wander picks a new target next tick).
                 if dist < PATROL_REACH_THRESHOLD {
                     patrol_index = (patrol_index + 1) % patrol_waypoints.len();
-                } else if dist > 0.001 {
-                    let mut dir = to_target;
-                    dir.normalize();
-                    move_dir = dir;
+                    if wander_active && patrol_waypoints.len() == 1 {
+                        patrol_waypoints.clear();
+                    }
+                    waypoint_stuck_ticks = 0;
+                    last_dist_to_target = None;
+                } else {
+                    // Obstacle detection: entities nearby repulse the steering.
+                    let entities = conn.nearby_entities(PATROL_OBSTACLE_RADIUS);
+                    let avoid = obstacle_avoidance(cur, &entities, PATROL_OBSTACLE_RADIUS);
+                    let avoiding = avoid.magnitude() > 0.001;
+                    if avoiding && !was_avoiding {
+                        obs_events.push(format!(
+                            "patrol: {} obstacle(s) nearby, avoiding",
+                            entities.len()
+                        ));
+                    }
+                    was_avoiding = avoiding;
+
+                    let mut desired = to_target;
+                    desired.normalize();
+                    if avoiding {
+                        desired += avoid * PATROL_AVOID_STRENGTH;
+                    }
+                    if desired.magnitude() > 0.001 {
+                        desired.normalize();
+                    }
+
+                    // Unreachable waypoint detection: skip after stuck_ticks.
+                    let improving = last_dist_to_target
+                        .map_or(true, |last| dist < last - WAYPOINT_PROGRESS_EPSILON);
+                    if improving {
+                        waypoint_stuck_ticks = 0;
+                    } else {
+                        waypoint_stuck_ticks += 1;
+                    }
+                    last_dist_to_target = Some(dist);
+
+                    if waypoint_stuck_ticks > WAYPOINT_STUCK_TICKS {
+                        obs_events.push(format!(
+                            "patrol: waypoint [{:.1},{:.1}] unreachable, skipping",
+                            target.x, target.y
+                        ));
+                        if wander_active {
+                            patrol_waypoints.clear();
+                        } else if patrol_waypoints.len() > 1 {
+                            patrol_index = (patrol_index + 1) % patrol_waypoints.len();
+                        } else {
+                            patrol_active = false;
+                        }
+                        waypoint_stuck_ticks = 0;
+                        last_dist_to_target = None;
+                    } else {
+                        // Smoothly interpolate movement toward desired steering.
+                        let alpha = PATROL_SMOOTH_ALPHA;
+                        patrol_move_dir = patrol_move_dir * (1.0 - alpha) + desired * alpha;
+                        if patrol_move_dir.magnitude() > 0.001 {
+                            patrol_move_dir.normalize();
+                        } else {
+                            patrol_move_dir = Vec2::zero();
+                        }
+                        move_dir = patrol_move_dir;
+                    }
                 }
             }
+        } else {
+            // Not patrolling: decay residual smoothed steering.
+            let alpha = PATROL_SMOOTH_ALPHA;
+            patrol_move_dir = patrol_move_dir * (1.0 - alpha);
+            if patrol_move_dir.magnitude() <= 0.001 {
+                patrol_move_dir = Vec2::zero();
+            }
+            was_avoiding = false;
         }
 
         // --- Drain pending stdin commands (non-blocking) ------------------
@@ -642,6 +743,19 @@ pub fn run_agent<C: GameConnection>(
                             patrol_index = 0;
                             patrol_active = true;
                         }
+                        waypoint_stuck_ticks = 0;
+                        last_dist_to_target = None;
+                    }
+                    AgentCommand::Wander { active } => {
+                        match active {
+                            None => wander_active = !wander_active,
+                            Some(flag) => wander_active = flag,
+                        }
+                        if wander_active {
+                            patrol_active = false;
+                            patrol_waypoints.clear();
+                            patrol_index = 0;
+                        }
                     }
                 },
                 Err(e) => {
@@ -670,7 +784,6 @@ pub fn run_agent<C: GameConnection>(
         heartbeat.ok();
 
         // --- Build observation ------------------------------------------
-        let mut obs_events: Vec<String> = Vec::new();
         for event in &events {
             match event {
                 veloren_client::Event::Chat(msg) => {
@@ -835,5 +948,50 @@ mod tests {
         let c = AlwaysFailConnector;
         let res = connect_with_retry(&c, 2, Duration::from_millis(1));
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn obstacle_avoidance_steers_away_from_nearby_entity() {
+        let cur = Vec2::zero();
+        let entities = [[1.0, 0.0, 0.0]]; // entity directly ahead
+        let avoid = obstacle_avoidance(cur, &entities, 2.0);
+        assert!(avoid.x < -0.5, "should repulse away from the entity, got {avoid:?}");
+    }
+
+    #[test]
+    fn obstacle_avoidance_ignores_out_of_radius_entities() {
+        let cur = Vec2::zero();
+        let entities = [[10.0, 0.0, 0.0]];
+        assert_eq!(obstacle_avoidance(cur, &entities, 2.0), Vec2::zero());
+    }
+
+    #[test]
+    fn obstacle_avoidance_combines_multiple_obstacles() {
+        let cur = Vec2::zero();
+        let entities = [[1.0, 1.0, 0.0], [1.0, -1.0, 0.0]];
+        let avoid = obstacle_avoidance(cur, &entities, 2.0);
+        assert!(avoid.x < -0.5, "combined repulsion should point back, got {avoid:?}");
+        assert!((avoid.y - 0.0).abs() < 0.1, "symmetric obstacles cancel sideways");
+    }
+
+    #[test]
+    fn wander_target_stays_within_radius() {
+        let mut rng = WanderRng::seed(1234.0);
+        let cur = Vec2::new(10.0, 20.0);
+        let target = wander_target(&mut rng, cur, WANDER_RADIUS);
+        let dist = (Vec2::new(target[0], target[1]) - cur).magnitude();
+        assert!(dist >= WANDER_RADIUS * 0.25, "target too close: {dist}");
+        assert!(dist <= WANDER_RADIUS, "target too far: {dist}");
+    }
+
+    #[test]
+    fn wander_target_is_deterministic_given_seed() {
+        let cur = Vec2::new(3.0, -1.0);
+        let mut a = WanderRng::seed(99.0);
+        let mut b = WanderRng::seed(99.0);
+        assert_eq!(
+            wander_target(&mut a, cur, WANDER_RADIUS),
+            wander_target(&mut b, cur, WANDER_RADIUS)
+        );
     }
 }

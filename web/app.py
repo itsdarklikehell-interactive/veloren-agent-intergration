@@ -714,7 +714,7 @@ def analytics():
                 (cutoff, limit),
             ).fetchall()
             lat_rows = _db_conn.execute(
-                "SELECT duration_seconds FROM tick_latency WHERE recorded_at >= ? "
+                "SELECT duration_seconds, recorded_at FROM tick_latency WHERE recorded_at >= ? "
                 "ORDER BY id ASC LIMIT ?",
                 (cutoff, limit),
             ).fetchall()
@@ -723,7 +723,7 @@ def analytics():
                 "SELECT * FROM observations ORDER BY id ASC LIMIT ?", (limit,)
             ).fetchall()
             lat_rows = _db_conn.execute(
-                "SELECT duration_seconds FROM tick_latency ORDER BY id ASC LIMIT ?",
+                "SELECT duration_seconds, recorded_at FROM tick_latency ORDER BY id ASC LIMIT ?",
                 (limit,),
             ).fetchall()
 

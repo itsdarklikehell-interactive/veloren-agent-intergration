@@ -126,6 +126,9 @@ python3 app.py                               # http://127.0.0.1:5000
 | `/api/server-logs` | GET | Tmux capture-pane tail of `veloren-server` |
 | `/api/agent-logs` | GET | Raw agent stdout/stderr tail |
 | `/api/observations` | GET | Parsed JSON-lines observations from the agent |
+| `/api/analytics` | GET | Observation statistics and time series (totals, presence, health, ticks, latency percentiles) |
+| `/api/observations/export` | GET | Export persisted observations as CSV or JSON (`?format=csv|json&window=all|<N>m|<N>h|<N>d`) |
+| `/api/metrics` | GET | Prometheus metrics as JSON (dashboard API key required) |
 | `/api/server/start` | POST | Start `veloren-server-cli` in tmux (`scripts/start-server.sh`) |
 | `/api/server/stop` | POST | Kill the tmux session |
 | `/api/agent/start` | POST | Start `veloren-agent` with a stdin pipe |
@@ -145,9 +148,10 @@ curl -u "user:<key>" http://127.0.0.1:5000/api/health   # Basic auth also accept
 ```
 
 `GET /api/health` is intentionally unauthenticated so load balancers and
-monitoring can poll it. The dashboard page embeds the key so the browser UI can
-poll the API; bind to `127.0.0.1` (the default) or put a TLS reverse proxy in
-front for network-facing deployments.
+monitoring can poll it. The browser UI reads the key from
+`localStorage["veloren_dashboard_api_key"]` (a prompt offers to store it on
+first request); bind to `127.0.0.1` (the default) or put a TLS reverse proxy
+in front for network-facing deployments.
 
 Credentials (`VELOREN_USERNAME`/`VELOREN_PASSWORD`) are read from `.env` and
 forwarded to the agent process; they are never exposed by the dashboard.

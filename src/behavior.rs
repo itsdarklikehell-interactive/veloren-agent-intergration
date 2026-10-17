@@ -3,44 +3,41 @@
 //! Every tick the agent selects a behavior goal from its observations
 //! (health, position, nearby entities) and converts the chosen goal into a
 //! movement steering direction. Goals are prioritized so urgent needs (avoid
-//! danger) override routine ones (gather, explore). A cooldown system prevents
-//! goal thrashing, and patrol waypoints are fed into the Explore goal so
-//! patrol and autonomous behavior share one steering source.
+//! danger) override routine ones (gather, explore). A cooldown system
+//! prevents goal thrashing. The Explore goal reuses the patrol/wander
+//! steering already computed by the tick loop, so behavior integrates with
+//! patrol instead of replacing it.
 //!
 //! This module is pure logic over observation data: it does not touch the
 //! network, which makes it unit-testable without a Veloren server.
 
-use crate::{HealthObs, PATROL_REACH_THRESHOLD};
+use crate::HealthObs;
 use std::cmp::Ordering;
-use std::f32::consts::PI;
 use vek::Vec2;
 
-/// Health ratio (current / maximum) below which danger avoidance takes
-/// priority over every other goal.
-pub(crate) const HEALTH_LOW_RATIO: f32 = 0.30;
+/// Health ratio (current / maximum) below which danger avoidance outranks
+/// every other goal.
+const HEALTH_LOW_RATIO: f32 = 0.30;
 
-/// Ticks the agent sticks with its current goal before re-selecting. Prevents
-/// flapping between goals every tick (2 s at 60 ticks/sec).
-pub(crate) const GOAL_COOLDOWN_TICKS: u64 = 120;
+/// Ticks the agent keeps a goal before re-selecting. Prevents flapping
+/// between goals every tick (2 s at 60 ticks/sec).
+const GOAL_COOLDOWN_TICKS: u64 = 120;
 
 /// Ticks between gather actions toward the same set of nearby entities.
-pub(crate) const GATHER_COOLDOWN_TICKS: u64 = 60;
+const GATHER_COOLDOWN_TICKS: u64 = 60;
 
-/// Radius (world units) within which an entity counts as "nearby" for gather
-/// / avoid decisions.
+/// Radius (world units) within which an entity counts as "nearby" for
+/// gather / avoid decisions.
 pub(crate) const NEARBY_ENTITY_RADIUS: f32 = 8.0;
 
-/// Radius (world units) at which an explore / patrol target counts as reached.
-pub(crate) const EXPLORE_REACH_THRESHOLD: f32 = PATROL_REACH_THRESHOLD;
-
-/// Distance (world units) from the agent at which a fresh wander target is
-/// placed when exploring.
-pub(crate) const WANDER_RADIUS: f32 = 12.0;
+/// Distance (world units) at which the agent counts as arrived at a gather
+/// target and stops moving toward it.
+const GATHER_ARRIVE_DIST: f32 = 1.0;
 
 /// Behavior goal the agent is currently pursuing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Goal {
-    /// Nothing urgent: wander the world or follow the patrol waypoint.
+    /// Nothing urgent: follow the patrol / wander steering.
     #[default]
     Explore,
     /// Move toward nearby entities (resources, items) to gather them.
@@ -66,6 +63,9 @@ pub struct BehaviorInputs {
     pub health: Option<HealthObs>,
     pub position: Option<[f32; 3]>,
     pub nearby_entities: Vec<[f32; 3]>,
+    /// Smoothed patrol/wander steering (already obstacle-aware) produced by
+    /// the tick loop; used as the movement for the Explore goal.
+    pub patrol_steering: Vec2<f32>,
 }
 
 /// A candidate movement action produced by a goal.
@@ -81,11 +81,6 @@ pub struct BehaviorSystem {
     goal: Goal,
     goal_cooldown: u64,
     gather_cooldown: u64,
-    /// Patrol waypoint the Explore goal should steer toward (`None` = wander).
-    explore_target: Option<[f32; 2]>,
-    /// Computed explore destination for pure wandering.
-    wander_target: Option<[f32; 2]>,
-    wander_angle: f32,
 }
 
 impl Default for BehaviorSystem {
@@ -94,9 +89,6 @@ impl Default for BehaviorSystem {
             goal: Goal::Explore,
             goal_cooldown: 0,
             gather_cooldown: 0,
-            explore_target: None,
-            wander_target: None,
-            wander_angle: 0.0,
         }
     }
 }
@@ -108,14 +100,8 @@ impl BehaviorSystem {
         self.gather_cooldown = self.gather_cooldown.saturating_sub(1);
     }
 
-    /// Set the patrol waypoint the Explore goal should steer toward. `None`
-    /// clears the patrol target so pure wandering resumes.
-    pub fn set_patrol_target(&mut self, target: Option<[f32; 2]>) {
-        self.explore_target = target;
-    }
-
-    /// Select the active goal from observations, respecting the goal cooldown.
-    /// While `goal_cooldown` is nonzero the current goal is kept.
+    /// Select the active goal from observations, respecting the goal
+    /// cooldown. While `goal_cooldown` is nonzero the current goal is kept.
     pub fn select_goal(&mut self, inputs: &BehaviorInputs) -> Goal {
         if self.goal_cooldown > 0 {
             return self.goal;
@@ -161,7 +147,7 @@ impl BehaviorSystem {
                     self.gather_action(inputs)
                 }
             }
-            Goal::Explore => self.explore_action(inputs),
+            Goal::Explore => inputs.patrol_steering,
         };
         BehaviorAction {
             goal,
@@ -199,55 +185,11 @@ impl BehaviorSystem {
             return Vec2::zero();
         };
         let to_entity = Vec2::new(nearest[0] - cur[0], nearest[1] - cur[1]);
-        if to_entity.magnitude() < 1.0 {
+        if to_entity.magnitude() < GATHER_ARRIVE_DIST {
             Vec2::zero() // arrived at the entity
         } else {
             normalize(to_entity)
         }
-    }
-
-    /// Steer toward the patrol waypoint when patrolling, otherwise toward a
-    /// wandering destination that is refreshed each time it is reached.
-    fn explore_action(&mut self, inputs: &BehaviorInputs) -> Vec2<f32> {
-        let Some(cur_pos) = inputs.position else {
-            return Vec2::zero();
-        };
-        let cur = Vec2::new(cur_pos[0], cur_pos[1]);
-
-        let target = if let Some(wp) = self.explore_target {
-            Vec2::new(wp[0], wp[1])
-        } else {
-            self.wander_target(cur)
-        };
-
-        let to_target = target - cur;
-        let dist = to_target.magnitude();
-        if dist < EXPLORE_REACH_THRESHOLD {
-            // Reached the destination: pick a fresh wander target next tick.
-            if self.explore_target.is_none() {
-                self.wander_target = None;
-            }
-            Vec2::zero()
-        } else {
-            normalize(to_target)
-        }
-    }
-
-    /// Pick (or reuse) a wander destination at `WANDER_RADIUS` from `cur`.
-    fn wander_target(&mut self, cur: Vec2<f32>) -> Vec2<f32> {
-        if let Some(wt) = self.wander_target {
-            let wt2 = Vec2::new(wt[0], wt[1]);
-            if (wt2 - cur).magnitude() < EXPLORE_REACH_THRESHOLD {
-                self.wander_target = None;
-            } else {
-                return wt2;
-            }
-        }
-        self.wander_angle = (self.wander_angle + 0.5).rem_euclid(2.0 * PI);
-        let offset = Vec2::new(self.wander_angle.cos(), self.wander_angle.sin()) * WANDER_RADIUS;
-        let target = cur + offset;
-        self.wander_target = Some([target.x, target.y]);
-        target
     }
 }
 
@@ -285,46 +227,56 @@ mod tests {
         HealthObs { current, maximum, is_dead }
     }
 
-    fn inputs_with(health: Option<HealthObs>, position: Option<[f32; 3]>, entities: Vec<[f32; 3]>) -> BehaviorInputs {
-        BehaviorInputs { health, position, nearby_entities: entities }
+    fn inputs(
+        health: Option<HealthObs>,
+        position: Option<[f32; 3]>,
+        entities: Vec<[f32; 3]>,
+        patrol_steering: Vec2<f32>,
+    ) -> BehaviorInputs {
+        BehaviorInputs { health, position, nearby_entities: entities, patrol_steering }
     }
 
     #[test]
     fn low_health_selects_avoid_danger() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
+        let inputs = inputs(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
         assert_eq!(b.select_goal(&inputs), Goal::AvoidDanger);
     }
 
     #[test]
     fn dead_selects_avoid_danger() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(Some(health(0.0, 100.0, true)), Some([0.0, 0.0, 0.0]), vec![]);
+        let inputs = inputs(Some(health(0.0, 100.0, true)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
         assert_eq!(b.select_goal(&inputs), Goal::AvoidDanger);
     }
 
     #[test]
     fn nearby_entities_selects_gather() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![[5.0, 0.0, 0.0]]);
+        let inputs = inputs(
+            Some(health(100.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[5.0, 0.0, 0.0]],
+            Vec2::zero(),
+        );
         assert_eq!(b.select_goal(&inputs), Goal::Gather);
     }
 
     #[test]
     fn nothing_urgent_selects_explore() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
+        let inputs = inputs(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
         assert_eq!(b.select_goal(&inputs), Goal::Explore);
     }
 
     #[test]
     fn goal_cooldown_keeps_current_goal() {
         let mut b = BehaviorSystem::default();
-        let healthy = inputs_with(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
-        let dangerous = inputs_with(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
+        let healthy = inputs(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
+        let dangerous = inputs(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
 
         assert_eq!(b.select_goal(&healthy), Goal::Explore);
-        // Cooldown is active: switching to dangerous inputs must not change the goal.
+        // Cooldown active: dangerous inputs must not change the goal.
         assert_eq!(b.select_goal(&dangerous), Goal::Explore);
         assert_eq!(b.goal, Goal::Explore);
     }
@@ -332,8 +284,8 @@ mod tests {
     #[test]
     fn goal_cooldown_expires_after_ticks() {
         let mut b = BehaviorSystem::default();
-        let healthy = inputs_with(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
-        let dangerous = inputs_with(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
+        let healthy = inputs(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
+        let dangerous = inputs(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![], Vec2::zero());
 
         b.select_goal(&healthy); // Explore, cooldown = GOAL_COOLDOWN_TICKS
         for _ in 0..GOAL_COOLDOWN_TICKS {
@@ -345,7 +297,12 @@ mod tests {
     #[test]
     fn action_priority_avoid_danger_highest() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(Some(health(20.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![[5.0, 0.0, 0.0]]);
+        let inputs = inputs(
+            Some(health(20.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![[5.0, 0.0, 0.0]],
+            Vec2::zero(),
+        );
         let action = b.chosen_action(&inputs);
         assert_eq!(action.goal, Goal::AvoidDanger);
         assert_eq!(action.priority, Goal::AvoidDanger.priority());
@@ -356,10 +313,11 @@ mod tests {
     #[test]
     fn gather_action_moves_toward_nearest_entity() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(
+        let inputs = inputs(
             Some(health(100.0, 100.0, false)),
             Some([0.0, 0.0, 0.0]),
             vec![[10.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            Vec2::zero(),
         );
         let action = b.action_for(Goal::Gather, &inputs);
         assert_eq!(action.goal, Goal::Gather);
@@ -371,10 +329,11 @@ mod tests {
     #[test]
     fn avoid_action_moves_away_from_nearest_entity() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(
+        let inputs = inputs(
             Some(health(20.0, 100.0, false)),
             Some([0.0, 0.0, 0.0]),
             vec![[5.0, 0.0, 0.0]],
+            Vec2::zero(),
         );
         let action = b.action_for(Goal::AvoidDanger, &inputs);
         assert_eq!(action.goal, Goal::AvoidDanger);
@@ -386,32 +345,28 @@ mod tests {
     #[test]
     fn gather_idles_when_at_entity() {
         let mut b = BehaviorSystem::default();
-        let inputs = inputs_with(
+        let inputs = inputs(
             Some(health(100.0, 100.0, false)),
             Some([3.0, 0.0, 0.0]),
             vec![[3.0, 0.0, 0.0]],
+            Vec2::zero(),
         );
         let action = b.action_for(Goal::Gather, &inputs);
         assert_eq!(action.move_dir, Vec2::zero());
     }
 
     #[test]
-    fn explore_moves_toward_patrol_target() {
+    fn explore_uses_patrol_steering() {
         let mut b = BehaviorSystem::default();
-        b.set_patrol_target(Some([10.0, 0.0]));
-        let inputs = inputs_with(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
+        let inputs = inputs(
+            Some(health(100.0, 100.0, false)),
+            Some([0.0, 0.0, 0.0]),
+            vec![],
+            Vec2::new(0.0, 1.0),
+        );
         let action = b.action_for(Goal::Explore, &inputs);
-        assert!((action.move_dir.x - 1.0).abs() < 0.001);
-        assert!(action.move_dir.y.abs() < 0.001);
-    }
-
-    #[test]
-    fn explore_idles_at_patrol_target() {
-        let mut b = BehaviorSystem::default();
-        b.set_patrol_target(Some([0.0, 0.0]));
-        let inputs = inputs_with(Some(health(100.0, 100.0, false)), Some([0.0, 0.0, 0.0]), vec![]);
-        let action = b.action_for(Goal::Explore, &inputs);
-        assert_eq!(action.move_dir, Vec2::zero());
+        assert_eq!(action.goal, Goal::Explore);
+        assert_eq!(action.move_dir, Vec2::new(0.0, 1.0));
     }
 
     #[test]

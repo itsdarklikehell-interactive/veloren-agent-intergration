@@ -13,6 +13,7 @@
 //!   {"cmd":"command","name":"say","args":["hi"]}  send a server command
 //!   {"cmd":"status"}                    request a status observation
 //!   {"cmd":"patrol","waypoints":[[x,y],[x,y]]}  patrol waypoints (loops back to start)
+//!   {"cmd":"wander"}                              wander mode (random nearby targets, toggles)
 //!   {"cmd":"quit"}                      disconnect and exit
 //!
 //! Observations (one JSON object per line on stdout):

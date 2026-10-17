@@ -497,11 +497,13 @@
     pollServerLogs();
     pollAgentLogs();
     pollObservations();
+    pollAnalytics();
     pollMetrics();
     setInterval(pollStatus, POLL_STATUS);
     setInterval(pollServerLogs, POLL_LOGS);
     setInterval(pollAgentLogs, POLL_LOGS);
     setInterval(pollObservations, POLL_LOGS);
+    setInterval(pollAnalytics, POLL_ANALYTICS);
     setInterval(pollMetrics, POLL_METRICS);
   }
 
@@ -512,6 +514,15 @@
     wireButton("btn-agent-start", "/api/agent/start", null, "msg-agent");
     wireButton("btn-agent-stop", "/api/agent/stop", null, "msg-agent");
     wireSendCommand();
+    el("btn-export-csv").addEventListener("click", function () { downloadExport("csv"); });
+    el("btn-export-json").addEventListener("click", function () { downloadExport("json"); });
+    var winSelect = el("an-window");
+    if (winSelect) {
+      winSelect.addEventListener("change", function () {
+        analyticsWindow = winSelect.value;
+        pollAnalytics();
+      });
+    }
     startPolling();
   });
 })();
