@@ -74,9 +74,9 @@ The dashboard UI is at `http://localhost:5000`; the live viewport is at
 
 | Service | Check |
 |---|---|
-| `veloren-server` | TCP port 14004 reachable from inside the container |
-| `veloren-agent` | `./target/release/veloren-agent --help` exits 0 (release binary starts) |
-| `veloren-dashboard` | none (Flask process — watch `docker compose logs veloren-dashboard`) |
+| `veloren-server` | TCP port 14004 reachable from inside the container ||
+| `veloren-agent` | `/usr/local/bin/veloren-agent --help` exits 0 (release binary starts) ||
+| `veloren-dashboard` | `GET /api/health` (public, no API key) returns HTTP 200 once the app serves ||
 
 The agent's real work — joining the game world — is ordered after the server
 via `depends_on: veloren-server` with `condition: service_healthy`, so the
@@ -194,6 +194,19 @@ removes them (world resets, observation and trail history lost).
 
 ## Production notes
 
+- Image size: all three Dockerfiles are multi-stage. The builder stages carry
+  the full Rust/Python toolchain, while the runner images ship only the
+  release binary (`veloren-agent`, `veloren-server`) or the app plus runtime
+  deps (`veloren-dashboard` on `python:3.12-slim`). Build once, promote the
+  same image through staging to production — do not rebuild per environment.
+- Resource limits: every service declares `deploy.resources.limits` (cpus +
+  memory) in docker-compose.yml so server world generation cannot starve the
+  agent or dashboard. Tune them to the host; the defaults assume a host with
+  at least 4 CPUs and 8 GB of RAM dedicated to the stack.
+- Health checks: all three services declare one. The agent's real work is
+  ordered after the server via `depends_on: veloren-server` with
+  `condition: service_healthy`, so the agent container never starts before the
+  world is ready.
 - The dashboard image runs Flask's development server (`python3 web/app.py`).
   For anything beyond local testing, run behind a TLS reverse proxy (nginx,
   Caddy, …). Bind to `0.0.0.0` only when a proxy or firewall sits in front;

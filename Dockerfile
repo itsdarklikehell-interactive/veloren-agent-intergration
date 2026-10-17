@@ -1,6 +1,11 @@
 # Docker sandbox for the headless veloren-agent.
 # Builds and tests the agent in an isolated container (no host Rust toolchain needed).
-FROM rust:1.82
+#
+# Multi-stage build:
+#   builder  - Rust toolchain; fetches + patches dependencies; builds + tests
+#   runner   - debian:bookworm-slim carrying only the release binary
+###############################################################################
+FROM rust:1.82 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates pkg-config libssl-dev \
@@ -39,4 +44,15 @@ RUN cargo fetch \
 RUN RUSTFLAGS="-D warnings" cargo +nightly build --release
 RUN RUSTFLAGS="-D warnings" cargo +nightly test --release
 
-CMD ["cargo", "+nightly", "build", "--release"]
+###############################################################################
+FROM debian:bookworm-slim AS runner
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/veloren
+COPY --from=builder /src/target/release/veloren-agent /usr/local/bin/veloren-agent
+
+ENTRYPOINT ["/usr/local/bin/veloren-agent"]
+CMD ["--server", "veloren-server:14004"]

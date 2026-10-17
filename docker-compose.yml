@@ -25,6 +25,14 @@
 #     airshipper profiles directory (VELOREN_SERVER_BIN) and override the
 #     entrypoint to run `veloren-server-cli --non-interactive`.
 #
+# Health checks: every service declares one. `docker compose ps` reports
+# `(healthy)` once start_period elapses and the check passes; unhealthy
+# containers are restarted by `restart: unless-stopped`.
+#
+# Resource limits: every service declares `deploy.resources.limits` so a noisy
+# service (world generation in the server) cannot starve the others. Tune to the
+# host in production.
+#
 # See docs/docker-compose.md for the full runbook.
 
 services:
@@ -51,6 +59,13 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 2G
+        limits:
+          cpus: "2.0"
+          memory: 4G
     networks:
       - veloren-net
 
@@ -72,13 +87,13 @@ services:
     depends_on:
       veloren-server:
         condition: service_healthy
-    entrypoint: ["./target/release/veloren-agent"]
+    entrypoint: ["/usr/local/bin/veloren-agent"]
     command: ["--server", "veloren-server:14004"]
     healthcheck:
       # Smoke test: the release binary must start cleanly. Real work
       # (connecting to the game server) is gated on veloren-server's own
       # healthcheck via depends_on condition: service_healthy.
-      test: ["CMD-SHELL", "./target/release/veloren-agent --help >/dev/null 2>&1"]
+      test: ["CMD", "/usr/local/bin/veloren-agent", "--help"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -88,6 +103,13 @@ services:
       # defaulting to the standard Airshipper profile location.
       - ${VELOREN_ASSETS:-/home/rizzo/.local/share/airshipper/profiles/default/assets}:/opt/veloren/assets:ro
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 1G
+        limits:
+          cpus: "1.0"
+          memory: 2G
     networks:
       - veloren-net
 
@@ -109,7 +131,21 @@ services:
       - "5000:5000"
     volumes:
       - dashboard-data:/app/.hermes/artifacts
+    healthcheck:
+      # /api/health is public (no API key) and returns 200 once the app serves.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 256M
+        limits:
+          cpus: "0.5"
+          memory: 512M
     networks:
       - veloren-net
     # DASHBOARD_API_KEY is injected via .env at runtime; never baked into the
