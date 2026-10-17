@@ -165,7 +165,6 @@ fn main() {
 
     // --- Main tick loop ---------------------------------------------------
     let mut clock = Clock::new(Duration::from_secs_f64(1.0 / TICKS_PER_SEC));
-    let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
@@ -176,40 +175,53 @@ fn main() {
 
     let mut chat_buffer: Vec<String> = Vec::new();
 
+    // Non-blocking command channel: a reader thread blocks on stdin so the
+    // main tick loop can drain available commands without ever stalling.
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<String>();
+    {
+        let tx = cmd_tx.clone();
+        std::thread::spawn(move || {
+            for line in io::stdin().lock().lines().flatten() {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     'running: loop {
         clock.tick();
 
         // --- Drain pending stdin commands (non-blocking) ------------------
-        let stdin_lock = stdin.lock();
-        for line in stdin_lock.lines().flatten() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<AgentCommand>(trimmed) {
-                Ok(cmd) => match cmd {
-                    AgentCommand::Move { x, y } => {
-                        move_dir = Vec2::new(x, y);
+        for line in cmd_rx.try_iter() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
                     }
-                    AgentCommand::Chat { msg } => {
-                        pending_chat = Some(msg);
+                    match serde_json::from_str::<AgentCommand>(trimmed) {
+                        Ok(cmd) => match cmd {
+                            AgentCommand::Move { x, y } => {
+                                move_dir = Vec2::new(x, y);
+                            }
+                            AgentCommand::Chat { msg } => {
+                                pending_chat = Some(msg);
+                            }
+                            AgentCommand::ServerCommand { name, args } => {
+                                pending_command = Some((name, args));
+                            }
+                            AgentCommand::Status => {
+                                // Status is reported every tick via observation.
+                            }
+                            AgentCommand::Quit => {
+                                client.logout();
+                                break 'running;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to parse command: {e}");
+                        }
                     }
-                    AgentCommand::ServerCommand { name, args } => {
-                        pending_command = Some((name, args));
-                    }
-                    AgentCommand::Status => {
-                        // Status is reported every tick via observation.
-                    }
-                    AgentCommand::Quit => {
-                        client.logout();
-                        break 'running;
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Failed to parse command: {e}");
                 }
-            }
-        }
 
         // --- Apply inputs -------------------------------------------------
         let mut inputs = ControllerInputs::default();
