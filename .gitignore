@@ -21,3 +21,6 @@ Thumbs.db
 
 # Agent runtime state
 /veloren-agent-config/
+
+# Environment variables (never commit real credentials)
+.env

@@ -21,6 +21,7 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{
+    env,
     io::{self, BufRead, Write},
     path::PathBuf,
     sync::Arc,
@@ -100,15 +101,17 @@ struct Observation {
     events: Vec<String>,
 }
 
-/// Credential provider for --no-auth servers.
-/// The server reports auth_provider: None, so we key credentials by None.
+/// Credential provider for authenticated Veloren servers.
+/// Reads username/password from VELOREN_USERNAME / VELOREN_PASSWORD env vars.
+/// Only trusts the official auth server (https://auth.veloren.net).
 struct SimpleCredentialProvider {
     username: String,
+    password: String,
 }
 
 impl CredentialProvider for SimpleCredentialProvider {
-    fn auth_trusted(&self, _auth_provider: &Option<String>) -> bool {
-        true
+    fn auth_trusted(&self, auth_provider: &Option<String>) -> bool {
+        auth_provider == &Some("https://auth.veloren.net".to_string())
     }
 
     fn get_credentials(
@@ -116,7 +119,8 @@ impl CredentialProvider for SimpleCredentialProvider {
         _auth_provider: &Option<String>,
     ) -> impl std::future::Future<Output = Result<Credentials, ()>> + Send {
         let username = self.username.clone();
-        async move { Ok(Credentials::Username(username)) }
+        let password = self.password.clone();
+        async move { Ok(Credentials::UsernamePassword(username, password)) }
     }
 }
 
@@ -132,7 +136,9 @@ fn main() {
     };
 
     let provider = SimpleCredentialProvider {
-        username: args.character.clone(),
+        username: env::var("VELOREN_USERNAME").unwrap_or_else(|_| args.character.clone()),
+        password: env::var("VELOREN_PASSWORD")
+            .expect("VELOREN_PASSWORD must be set for authenticated servers"),
     };
 
     let mut client = runtime
