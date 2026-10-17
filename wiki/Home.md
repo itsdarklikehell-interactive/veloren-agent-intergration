@@ -21,3 +21,20 @@ This is the operations and knowledge base for the project. For design docs, API 
 - [Issues](https://github.com/itsdarklikehell/veloren-agent-intergration/issues)
 - [Pull Requests](https://github.com/itsdarklikehell/veloren-agent-intergration/pulls)
 - [Actions / CI](https://github.com/itsdarklikehell/veloren-agent-intergration/actions)
+
+## Agent infrastructure (Kanban)
+
+This project is operated by autonomous agents under the Hermes Kanban infrastructure. Agent personas and the Kanban lifecycle are defined in the repository:
+
+- [SOUL.md](https://github.com/itsdarklikehell/veloren-agent-intergration/blob/main/SOUL.md) — Agent profiles & Kanban personas (R&D Worker, Hermes Kanban QA Tester/PM, QA Engineer)
+- [AGENTS.md](https://github.com/itsdarklikehell/veloren-agent-intergration/blob/main/AGENTS.md) — Agent interaction guidelines
+- [KANBAN.md](https://github.com/itsdarklikehell/veloren-agent-intergration/blob/main/KANBAN.md) — How agents claim, complete, and block Kanban tasks
+
+The four Kanban profiles are:
+
+| Profile | Role |
+|---|---|
+| Hermes (GLaDOS) — Coordinator & Dispatcher | Task assignment, PR review, credentials, escalation |
+| R&D Worker — Autonomous Senior R&D Developer | Claims and executes Developer tasks |
+| Hermes Kanban QA Tester — Technical Product Manager | Requirements ingestion, decomposition, task seeding |
+| QA Engineer — Autonomous Senior QA Automation Engineer | Validation against Acceptance Criteria |

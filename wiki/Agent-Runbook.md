@@ -72,3 +72,14 @@ Each tick, the agent writes one JSON object to stdout:
 | Agent can't connect | Ensure server is running on port 14004 |
 | No observations | Agent may still be in character selection; wait for `presence` to become `Some(Character(...))` |
 | `presence` stays `None` | Character creation may have failed; check server logs in tmux |
+
+## Agent profile alignment
+
+This runbook is used by the **R&D Worker** Kanban profile (Autonomous Senior R&D Developer) when executing Developer tasks:
+
+- Claim the task via `kanban_show` before running the agent.
+- Signal liveness via `kanban_heartbeat` during long builds or server waits.
+- Complete via `kanban_complete` with a summary of what changed and how it was verified, plus metadata (branch name, test count).
+- If the build fails or the agent cannot connect, `kanban_block` with `kind=dependency` or `kind=needs_input` as appropriate.
+
+Commit all changes with `[Agent: R&D-Worker]` prefixed commit messages.

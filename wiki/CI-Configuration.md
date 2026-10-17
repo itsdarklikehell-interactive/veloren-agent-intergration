@@ -55,3 +55,35 @@ The project's user-facing interface is shell scripts (`scripts/`). The Rust agen
 Source: https://github.com/itsdarklikehell/ci-templates
 
 Available workflows: `ci-node.yml`, `ci-python.yml`, `ci-go.yml`, `ci-generic.yml`, `ci-shell.yml`.
+
+## Additional jobs
+
+### `nightly` — zero-warning nightly build
+
+Runs on every push/PR to `main`. Installs the nightly Rust toolchain and verifies
+`RUSTFLAGS="-D warnings" cargo build --release` (zero warnings) followed by
+`cargo test --release`. The agent depends on `veloren-client` from Veloren's
+gitlab `weekly` tag, which exercises unstable features; nightly is the
+canonical toolchain for this project (see `docs/troubleshooting.md`).
+
+### `docker-sandbox` — Docker build & test
+
+Builds `Dockerfile` (Rust sandbox image) and runs `cargo build --release` and
+`cargo test --release` inside the container, so the agent builds and tests in
+an isolated environment without a host Rust toolchain.
+
+## Headless readiness (`hermes verify`)
+
+`hermes verify --json` no longer polls HTTP `127.0.0.1:8000`. The saved recipe
+at `.hermes/environment.json` marks the agent as headless (`start: null`, no
+port), so `hermes verify` runs `cargo build` + `cargo test` and skips the
+inapplicable HTTP readiness phase. Headless readiness is verified over stdio/JSON
+instead — see `scripts/verify-readiness.sh` (pipe `{"cmd":"status"}` to the
+agent, assert a JSON observation with `"tick"` is emitted, then `quit`).
+
+Local readiness check (requires the local server in tmux `veloren-server`):
+
+```bash
+export VELOREN_USERNAME=hermes VELOREN_PASSWORD=<password>
+./scripts/verify-readiness.sh
+```

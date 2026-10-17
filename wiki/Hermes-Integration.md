@@ -67,3 +67,14 @@ echo '{"cmd":"status"}' | ./target/release/veloren-agent --character HERMES
 - Chat buffer is a ring buffer of the last 50 messages.
 - Position and health are `null` until the player enters the game world.
 - `presence` is `None` during character selection; `Some(Character(...))` once in-game.
+
+## Agent profile alignment
+
+The Hermes integration is operated by the **Hermes (GLaDOS)** Kanban profile — Coordinator & Dispatcher:
+
+- Hermes writes JSON commands to the agent's stdin and reads JSON-lines observations from stdout as part of running Developer tasks.
+- Reviews `kanban_complete` submissions from the R&D Worker and QA Engineer.
+- Manages `.env` credentials (never in chat) and routes them securely to the agent.
+- Escalates blocked tasks (`kanban_block` with `kind=needs_input`) to the human supervisor.
+
+Commit all changes with `[Agent: Hermes]` prefixed commit messages.

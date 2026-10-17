@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "veloren-agent (headless stdio/JSON)",
+    "kind": "rust",
+    "bootstrap": [],
+    "build": ["cargo build"],
+    "test": ["cargo test"],
+    "start": null,
+    "port": null,
+    "readinessPath": "/",
+    "evidence": [
+      "Detected Cargo.toml",
+      "Headless stdio/JSON agent — no HTTP server. `hermes verify` skips start/readiness: nothing listens on port 8000 here. Readiness is verified over stdio instead: pipe {\"cmd\":\"status\"} to the agent and assert a JSON observation containing \"tick\" is emitted (scripts/verify-readiness.sh)."
+    ]
+  },
+  "updatedAt": "2026-10-17T00:00:00Z"
+}

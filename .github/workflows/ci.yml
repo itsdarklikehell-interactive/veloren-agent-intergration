@@ -13,3 +13,27 @@ jobs:
       shellcheck: true
       shfmt: true
     secrets: inherit
+
+  nightly:
+    name: Zero-warning nightly build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Build with zero warnings (nightly)
+        run: RUSTFLAGS="-D warnings" cargo build --release
+      - name: Run test suite (nightly)
+        run: cargo test --release
+
+  docker-sandbox:
+    name: Docker sandbox build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker sandbox image
+        run: docker build -t veloren-agent-sandbox .
+      - name: Build in sandbox
+        run: docker run --rm veloren-agent-sandbox cargo build --release
+      - name: Test in sandbox
+        run: docker run --rm veloren-agent-sandbox cargo test --release
