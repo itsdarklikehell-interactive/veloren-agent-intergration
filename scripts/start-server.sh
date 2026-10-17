@@ -5,9 +5,9 @@
 
 set -euo pipefail
 
-SERVER_BIN="${VELUREN_SERVER_BIN:-/home/rizzo/.local/share/airshipper/profiles/default/veloren-server-cli}"
+SERVER_BIN="${VELOREN_SERVER_BIN:-/home/rizzo/.local/share/airshipper/profiles/default/veloren-server-cli}"
 SESSION="veloren-server"
-PORT="${VELUREN_PORT:-14004}"
+PORT="${VELOREN_PORT:-14004}"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "Server session '$SESSION' already exists. Attach with: tmux attach -t $SESSION"

@@ -47,3 +47,14 @@ no_proxy=* /tmp/teloren-probe/target/debug/teloren \
 ## Alternative: raw TCP client
 
 If teloren won't connect, a raw `std::net::TcpStream::connect("127.0.0.1:14004")` works fine — the issue is isolated to hickory-resolver's `lookup_host`.
+
+## Agent profile alignment
+
+Teloren setup is used by the **R&D Worker** Kanban profile (Autonomous Senior R&D Developer) when executing Developer tasks:
+
+- Claim the task via `kanban_show` before connecting teloren to visually verify agent behavior.
+- Signal liveness via `kanban_heartbeat` during long waits.
+- Complete via `kanban_complete` with a summary of what was verified.
+- If teloren cannot connect due to the DNS issue, `kanban_block` with `kind=dependency` (hickory-resolver) or `kind=needs_input` if manual intervention is required.
+
+Commit all changes with `[Agent: R&D-Worker]` prefixed commit messages.

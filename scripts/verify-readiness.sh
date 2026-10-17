@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 
 AGENT_BIN="${VELOREN_AGENT_BIN:-./target/release/veloren-agent}"
 PORT="${VELOREN_PORT:-14004}"
-CHARACTER="${VELOREN_AGENT_CHARACTER:-${VELUREN_AGENT_CHARACTER:-hermes}}"
+CHARACTER="${VELOREN_AGENT_CHARACTER:-hermes}"
 
 : "${VELOREN_USERNAME:?VELOREN_USERNAME must be set for authenticated servers}"
 : "${VELOREN_PASSWORD:?VELOREN_PASSWORD must be set for authenticated servers}"

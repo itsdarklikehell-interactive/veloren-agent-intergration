@@ -80,7 +80,7 @@ display, or windowing system.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `VELUREN_SERVER_BIN` | `~/.local/share/airshipper/profiles/default/veloren-server-cli` | Path to server binary |
-| `VELUREN_PORT` | `14004` | Server port |
-| `VELUREN_AGENT_BIN` | `./target/release/veloren-agent` | Path to agent binary |
-| `VELUREN_AGENT_CHARACTER` | `hermes` | Character name |
+| `VELOREN_SERVER_BIN` | `~/.local/share/airshipper/profiles/default/veloren-server-cli` | Path to server binary |
+| `VELOREN_PORT` | `14004` | Server port |
+| `VELOREN_AGENT_BIN` | `./target/release/veloren-agent` | Path to agent binary |
+| `VELOREN_AGENT_CHARACTER` | `hermes` | Character name |

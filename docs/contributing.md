@@ -45,7 +45,7 @@ cargo fmt
 
 - **Shell scripts:** POSIX-compatible where possible, `bash` shebang, `set -euo pipefail`
 - **Rust:** 2021 edition, `#![deny(unsafe_code)]`, clippy clean
-- **Commits:** Clear, descriptive messages. Prefix with `[Agent: GLaDOS]` if made by the GLaDOS agent
+- **Commits:** Clear, descriptive messages. Prefix with `[Agent: <Profile-Name>]` (e.g. `[Agent: Hermes]`, `[Agent: R&D-Worker]`, `[Agent: QA-Engineer]`)
 - **Docs:** Update `docs/` and `README.md` together when changing behavior
 
 ## Areas that need help

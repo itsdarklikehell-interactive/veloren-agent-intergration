@@ -9,8 +9,8 @@
 
 set -euo pipefail
 
-AGENT_BIN="${VELUREN_AGENT_BIN:-./target/release/veloren-agent}"
-CHARACTER="${VELUREN_AGENT_CHARACTER:-hermes}"
+AGENT_BIN="${VELOREN_AGENT_BIN:-./target/release/veloren-agent}"
+CHARACTER="${VELOREN_AGENT_CHARACTER:-hermes}"
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 '<command json>'" >&2

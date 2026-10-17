@@ -63,6 +63,17 @@ Tasks flow: **triage → todo → ready → running → done**. Blocked tasks mo
 Agents communicate through commit messages prefixed with `[Agent: <Profile-Name>]`, the Kanban toolset (`kanban_show`, `kanban_create`, `kanban_link`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`), issue comments, and pull request descriptions.
 
 
+### Wiki pages by primary operator
+
+| Wiki page | Primary operator | Purpose |
+|---|---|---|
+| [Server Operations](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki/Server-Operations) | R&D Worker | Start/stop/monitor the local Veloren dedicated server |
+| [Agent Runbook](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki/Agent-Runbook) | R&D Worker | Build, run, and command the headless agent |
+| [Teloren Setup](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki/Teloren-Setup) | R&D Worker | Connect the terminal frontend to the local server |
+| [CI Configuration](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki/CI-Configuration) | Hermes (GLaDOS) | GitHub Actions shellcheck/shfmt, nightly and Docker-sandbox CI |
+| [Build Troubleshooting](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki/Build-Troubleshooting) | R&D Worker (QA validates fixes) | Fixing Rust build issues on stable toolchain |
+| [Hermes Integration](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki/Hermes-Integration) | Hermes (GLaDOS) | Connecting Hermes (A2A) to the agent via stdio/JSON |
+
 ## Quick start (tl;dr)
 
 ```bash

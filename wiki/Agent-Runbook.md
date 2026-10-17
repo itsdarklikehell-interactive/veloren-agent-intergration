@@ -61,8 +61,8 @@ Each tick, the agent writes one JSON object to stdout:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `VELUREN_AGENT_BIN` | `./target/release/veloren-agent` | Agent binary path |
-| `VELUREN_AGENT_CHARACTER` | `hermes` | Character name |
+| `VELOREN_AGENT_BIN` | `./target/release/veloren-agent` | Agent binary path |
+| `VELOREN_AGENT_CHARACTER` | `hermes` | Character name |
 
 ## Troubleshooting
 

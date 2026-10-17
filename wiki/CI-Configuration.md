@@ -87,3 +87,13 @@ Local readiness check (requires the local server in tmux `veloren-server`):
 export VELOREN_USERNAME=hermes VELOREN_PASSWORD=<password>
 ./scripts/verify-readiness.sh
 ```
+
+## Agent profile alignment
+
+CI is operated and reviewed by the **Hermes (GLaDOS)** Kanban profile — Coordinator & Dispatcher:
+
+- Hermes reviews shellcheck/shfmt results and nightly/Docker-sandbox build outcomes on every push and PR to `main`.
+- Escalates persistent CI failures (build blocked, test regression) via `kanban_block` with `kind=dependency`.
+- Treats green CI as evidence that changes are safe to merge before QA Engineer validation.
+
+Commit all changes with `[Agent: Hermes]` prefixed commit messages.
