@@ -8,7 +8,7 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use specs::WorldExt;
 use tokio::runtime::Runtime;
@@ -22,7 +22,7 @@ use veloren_common::{
     ViewDistances,
 };
 use serde::{Deserialize, Serialize};
-use vek::Vec2;
+use vek::{Vec2, Vec3};
 
 /// Observation schema version, emitted as `schema_version` in every JSON observation.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -39,6 +39,23 @@ pub const AUTO_RESPONSE_COOLDOWN_TICKS: u64 = 300;
 
 /// World-unit distance at which a patrol waypoint counts as reached.
 pub const PATROL_REACH_THRESHOLD: f32 = 0.5;
+
+/// Radius (world units) around the agent in which another entity counts as
+/// an obstacle for patrol/wander movement.
+pub const PATROL_OBSTACLE_RADIUS: f32 = 2.0;
+/// Strength of the steering repulsion applied when avoiding obstacles,
+/// blended with the waypoint direction.
+pub const PATROL_AVOID_STRENGTH: f32 = 0.75;
+/// Interpolation factor (0..=1) applied per tick to the patrol/wander
+/// movement direction. Lower = smoother turns, slower response.
+pub const PATROL_SMOOTH_ALPHA: f32 = 0.2;
+/// Ticks without progress toward the current waypoint before it is treated
+/// as unreachable and skipped.
+pub const WAYPOINT_STUCK_TICKS: u64 = 180;
+/// Minimum per-tick distance decrease to count as progress toward a waypoint.
+pub const WAYPOINT_PROGRESS_EPSILON: f32 = 0.02;
+/// Radius around the agent within which wander mode picks new targets.
+pub const WANDER_RADIUS: f32 = 8.0;
 
 /// Health observation.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -131,6 +148,12 @@ pub enum AgentCommand {
     #[serde(rename = "patrol")]
     Patrol { waypoints: Vec<[f32; 2]> },
 
+    /// Enter/exit wander mode: the agent autonomously picks random targets
+    /// near its current position and patrols toward them. `active` omitted
+    /// toggles; `true`/`false` set it explicitly.
+    #[serde(rename = "wander")]
+    Wander { active: Option<bool> },
+
     #[serde(rename = "quit")]
     Quit,
 }
@@ -157,6 +180,13 @@ pub trait GameConnection: Send + Sync + 'static {
 
     /// Last known world position `[x, y, z]`.
     fn position(&self) -> Option<[f32; 3]>;
+
+    /// Positions of nearby entities (world units), used for obstacle
+    /// avoidance. The default implementation reports none; connections backed
+    /// by a live ECS should override to return entities within `radius`.
+    fn nearby_entities(&self, _radius: f32) -> Vec<[f32; 3]> {
+        Vec::new()
+    }
 
     /// Current health, if in-game.
     fn health(&self) -> Option<HealthObs>;
@@ -324,6 +354,27 @@ impl GameConnection for ClientGameConnection {
             .map(|p| [p.0.x, p.0.y, p.0.z])
     }
 
+    fn nearby_entities(&self, radius: f32) -> Vec<[f32; 3]> {
+        let Some(pos) = self.position() else { return Vec::new() };
+        let cur = Vec3::new(pos[0], pos[1], pos[2]);
+        let mut out = Vec::new();
+        let ecs = self.client.state().ecs();
+        let Ok(storage) = ecs.try_read_storage::<comp::Pos>() else { return Vec::new() };
+        let self_entity = self.client.entity();
+        for entity in ecs.entities() {
+            if Some(entity) == self_entity {
+                continue;
+            }
+            if let Some(p) = storage.get(entity) {
+                let d = p.0 - cur;
+                if d.magnitude() < radius {
+                    out.push([p.0.x, p.0.y, p.0.z]);
+                }
+            }
+        }
+        out
+    }
+
     fn health(&self) -> Option<HealthObs> {
         self.client.current::<comp::Health>().map(|h| HealthObs {
             current: h.current(),
@@ -442,9 +493,56 @@ pub fn ensure_character(client: &mut Client, character_name: &str) {
     }
 }
 
-/// The agent tick loop. Parameterized over a `GameConnection` and an output
-/// sink so production (`src/main.rs`) and integration tests share one code path.
-///
+/// Repulsion steering away from nearby entities (obstacles). Returns a unit
+/// vector pointing away from the combined obstacle cloud, or zero when none
+/// are within `radius`. Closer entities weigh more heavily.
+pub fn obstacle_avoidance(cur: Vec2<f32>, entities: &[[f32; 3]], radius: f32) -> Vec2<f32> {
+    let mut avoid = Vec2::zero();
+    for &e in entities {
+        let d = Vec2::new(e[0] - cur[0], e[1] - cur[1]);
+        let dist = d.magnitude();
+        if dist <= 0.001 || dist >= radius {
+            continue;
+        }
+        let away = Vec2::new(cur[0] - e[0], cur[1] - e[1]);
+        avoid += away / dist * (1.0 - dist / radius);
+    }
+    if avoid.magnitude() > 0.001 {
+        avoid.normalize()
+    } else {
+        avoid
+    }
+}
+
+/// Tiny xorshift PRNG used by wander mode to pick exploration targets without
+/// pulling in an extra dependency.
+struct WanderRng {
+    state: u64,
+}
+
+impl WanderRng {
+    fn seed(now_secs: f64) -> Self {
+        Self {
+            state: now_secs.to_bits().max(1),
+        }
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state as f64 / u64::MAX as f64 as f32
+    }
+}
+
+/// Pick a random wander target within `radius` of `cur`.
+fn wander_target(rng: &mut WanderRng, cur: Vec2<f32>, radius: f32) -> [f32; 2] {
+    let angle = rng.next_f32() * 2.0 * std::f32::consts::PI;
+    let dist = (rng.next_f32() * radius * 0.5).max(radius * 0.25);
+    let t = cur + Vec2::new(angle.cos(), angle.sin()) * dist;
+    [t.x, t.y]
+}
+
 /// Returns `AgentOutcome::Quit` on a `{"cmd":"quit"}` command, or
 /// `AgentOutcome::ConnectionLost` when the connection dies (tick error or
 /// keepalive watchdog timeout), at which point the caller should reconnect.

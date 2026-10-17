@@ -98,11 +98,10 @@
     <button class="btn" id="vp-btn-center">Center on agent</button>
     <button class="btn btn-toggle" id="vp-btn-follow" aria-pressed="false">Follow agent</button>
     <button class="btn" id="vp-btn-trail">Toggle trail</button>
-    <span class="muted" style="margin-left: auto;">API key: <code id="vp-api-key"></code></span>
+    <span class="muted" style="margin-left: auto;">Set your key once: <code>localStorage.setItem("veloren_dashboard_api_key", "<key>")</code></span>
   </div>
 </div>
 
-<script>window.DASHBOARD_API_KEY = {{ api_key|tojson }};</script>
 <script>
 (function () {
   const POLL_VIEWPORT = 1000;
@@ -128,7 +127,6 @@
   const elChipServer = document.getElementById("vp-chip-server");
   const elChipAgent = document.getElementById("vp-chip-agent");
   const elChipDead = document.getElementById("vp-chip-dead");
-  const elApiKey = document.getElementById("vp-api-key");
   const elBtnFollow = document.getElementById("vp-btn-follow");
 
   // State
@@ -152,7 +150,6 @@
   if (elApiKey) elApiKey.textContent = window.DASHBOARD_API_KEY || "(not set)";
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-
   function dpr() { return window.devicePixelRatio || 1; }
 
   function canvasRect() { return canvas.getBoundingClientRect(); }
@@ -602,7 +599,7 @@
   function request(url, opts) {
     opts = opts || {};
     const headers = Object.assign({}, opts.headers);
-    const key = window.DASHBOARD_API_KEY;
+    const key = localStorage.getItem("veloren_dashboard_api_key");
     if (key) headers["X-API-Key"] = key;
     return fetch(url, Object.assign({}, opts, { headers: headers })).then(function (resp) {
       if (!resp.ok) throw new Error("HTTP " + resp.status);

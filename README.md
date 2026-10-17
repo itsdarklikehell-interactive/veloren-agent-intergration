@@ -34,6 +34,7 @@ Veloren's engine is deliberately modular: the graphical frontend is entirely dec
 | [Quick Start](docs/quickstart.md) | Get a local server + agent running in 5 minutes |
 | [Architecture](docs/architecture.md) | System design and data flow |
 | [API Reference](docs/api-reference.md) | JSON commands and observations spec |
+| [Viewport API](docs/viewport-api.md) | Public endpoints for the live viewport (`/api/viewport/latest`, `/api/viewport/trail`) |
 | [Troubleshooting](docs/troubleshooting.md) | Known issues and workarounds |
 | [Contributing](docs/contributing.md) | How to contribute to this project |
 | [Wiki Home](https://github.com/itsdarklikehell/veloren-agent-intergration/wiki) | Project wiki (operations, runbooks, recipes) |
@@ -197,6 +198,31 @@ User=rizzo
 [Install]
 WantedBy=multi-user.target
 ```
+
+## Live Viewport
+
+The dashboard ships a dedicated live viewport — a 2D top-down map showing the
+agent's position, movement trail, health, chat, and events — at:
+
+```
+http://127.0.0.1:5000/viewport
+```
+
+It polls two **public** endpoints (no dashboard API key required):
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/viewport/latest` | GET | Latest observation: tick, position (x/y/z), health, registration, presence, recent chat + events |
+| `/api/viewport/trail` | GET | Position trail history; `?limit=300` caps the number of points |
+
+```bash
+curl -s http://127.0.0.1:5000/api/viewport/latest
+curl -s "http://127.0.0.1:5000/api/viewport/trail?limit=100"
+```
+
+The viewport page also polls `GET /api/status` (API key required) for the
+server/agent connection chips. See [docs/viewport-api.md](docs/viewport-api.md)
+for the full request/response spec.
 
 ## Prerequisites
 

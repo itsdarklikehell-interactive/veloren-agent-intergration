@@ -143,9 +143,109 @@ tmux kill-session -t veloren-server
 
 Then restart with `./scripts/start-server.sh`.
 
+## Agent connection issues
+
+### Agent cannot connect to the Veloren server
+
+**Symptom:** Agent logs "Connection refused" or "timed out connecting to
+127.0.0.1:14004"; `ss -tlnp | grep 14004` shows nothing.
+
+**Cause:** The `veloren-server-cli` process is not running, or still
+generating the world.
+
+**Fix:**
+
+```bash
+# Start the server
+./scripts/start-server.sh
+
+# Wait for world generation, then check the tmux logs
+tmux attach -t veloren-server   # detach: Ctrl-b d
+
+# Verify the port is listening
+ss -tlnp | grep 14004
+```
+
+### Agent runs but never registers (presence stays None)
+
+**Symptom:** Observations flow but `"presence": null` / `None` and
+`"registered": false` indefinitely.
+
+**Cause:** The server has not finished initializing or the character list is
+slow; the agent waits up to 10 seconds for the character list and 15 seconds
+to enter the game world.
+
+**Fix:** Wait longer after starting the server before launching the agent, or
+raise the timeouts in `src/main.rs`. In Docker Compose the agent starts only
+after `veloren-server` passes its healthcheck, so slow world generation simply
+delays the agent — check `docker compose logs veloren-agent`.
+
+### Agent process exits immediately
+
+**Symptom:** `POST /api/agent/start` returns `ok`, but `agent_running` is
+soon `false`; `web/agent.log` shows a crash or panic.
+
+**Cause:** Missing assets (`VELOREN_ASSETS` path wrong or not mounted), bad
+credentials, or the server not yet ready.
+
+**Fix:**
+
+- Confirm `VELOREN_ASSETS` points to an existing Airshipper assets directory.
+- Confirm `VELOREN_USERNAME` / `VELOREN_PASSWORD` are correct.
+- Check `docker compose logs veloren-agent` (Compose) or `web/agent.log`
+  (local) for the panic / backtrace.
+
+### Dashboard cannot start the agent
+
+**Symptom:** `POST /api/agent/start` returns
+`{"ok":false,"error":"agent binary not found: ..."}`.
+
+**Cause:** `VELOREN_AGENT_BIN` points to a binary that was never built.
+
+**Fix:** Build the agent first: `cargo build --release` (or `cargo
++nightly build --release` on the stable toolchain). In Compose, the image is
+built from `Dockerfile`, which compiles `src/main.rs`.
+
+### In Docker Compose: agent fails to reach `veloren-server:14004`
+
+**Symptom:** `veloren-agent` logs connection errors to
+`veloren-server:14004` even though the server container is up.
+
+**Cause:** Inside the agent container, `127.0.0.1` / `localhost` refers to
+the container itself, not the host. The agent must address the server by its
+Compose service name, `veloren-server`.
+
+**Fix:** The Compose file already starts the agent only after the server's
+healthcheck passes, and both services share `veloren-net`. If you customized
+`docker-compose.yml`, confirm the agent connects to `veloren-server:14004`
+and both services are on `veloren-net`.
+
+### `GET /api/viewport/latest` returns `{"ok": false, "error": "no observations yet"}`
+
+**Symptom:** The viewport shows "Waiting for position data…" forever.
+
+**Cause:** No observation has been persisted yet — the agent is not running,
+not connected, or still entering the world.
+
+**Fix:**
+
+1. Confirm the agent is running:
+
+   ```bash
+   curl -s -H "X-API-Key: $DASHBOARD_API_KEY" http://localhost:5000/api/status
+   ```
+
+   → `agent_running` should be `true`.
+
+2. Confirm the server port accepts connections: `server_connected` should be
+   `1`, or `ss -tlnp | grep 14004` should show a listener.
+
+3. Wait for the agent to enter the world — observations appear once
+   `registered` is `true`.
+
 ## Still stuck?
 
 Open an issue at https://github.com/itsdarklikehell/veloren-agent-intergration/issues with:
-- The full error output
-- Your Rust version (`rustc --version`)
-- Whether you're using Airshipper-installed Veloren
+- The full error output (`docker compose logs <service>` or `web/agent.log`)
+- Your Docker / Compose versions (`docker --version && docker compose version`)
+- Whether you are using the local scripts or Docker Compose

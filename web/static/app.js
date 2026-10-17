@@ -122,10 +122,13 @@
     container.innerHTML = html;
   }
 
+  // The dashboard API key is never embedded in the page. Set it once per browser
+  // before calling authenticated endpoints:
+  //   localStorage.setItem("veloren_dashboard_api_key", "<DASHBOARD_API_KEY>")
   function request(url, opts) {
     opts = opts || {};
     const headers = Object.assign({}, opts.headers);
-    const key = window.DASHBOARD_API_KEY;
+    const key = localStorage.getItem("veloren_dashboard_api_key");
     if (key) headers["X-API-Key"] = key;
     return fetch(url, Object.assign({}, opts, { headers: headers })).then(function (resp) {
       if (resp.status === 401) throw new Error("HTTP 401 — dashboard API key required (send X-API-Key)");

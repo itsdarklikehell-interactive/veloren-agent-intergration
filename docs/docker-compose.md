@@ -55,9 +55,12 @@ docker compose up --build
 docker compose up --build
 ```
 
-- `--build` rebuilds all three images from their Dockerfiles.
-- The dashboard becomes available at `http://localhost:5000` (public UI; API endpoints need `X-API-Key: <DASHBOARD_API_KEY>`).
-- The agent connects to the server at `veloren-server:14004` over the internal Compose network.
+- `--build` builds all three images from their Dockerfiles.
+- Drop `--build` on later runs to reuse cached images.
+- Add `-d` to run detached: `docker compose up --build -d`.
+
+The dashboard UI is at `http://localhost:5000`; the live viewport is at
+`http://localhost:5000/viewport`.
 
 ## Stop the stack
 

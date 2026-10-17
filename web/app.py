@@ -21,11 +21,13 @@ are delivered by polling JSON endpoints (no WebSockets):
 Authentication
 --------------
 Every endpoint except GET /, GET /api/health and GET /metrics requires the dashboard API key.
-Send it as an `X-API-Key` header, or as `Authorization: Bearer <key>`, or as
-`Authorization: Basic user:<key>`. The key is taken from DASHBOARD_API_KEY in
-the environment/.env; if unset, a random key is generated at startup and printed
-to stdout. Bind to 127.0.0.1 (default) and/or sit the dashboard behind a TLS
-reverse proxy for production use.
+Send it as an `X-API-Key` header (preferred), or as `Authorization: Bearer <key>`
+or `Authorization: Basic <key>`. The key is taken from DASHBOARD_API_KEY in
+the environment/.env; if unset, a random key is generated at startup (never logged).
+The key is never embedded in HTML responses. Clients must supply it themselves,
+e.g. via localStorage: `localStorage.setItem("veloren_dashboard_api_key", "<key>")`.
+Bind to 127.0.0.1 (default) and/or sit the dashboard behind a TLS reverse proxy
+for production use.
 
 Persistence
 -----------
@@ -53,6 +55,7 @@ import atexit
 import base64
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -60,7 +63,9 @@ import sqlite3
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+import csv
+import io
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, Response
@@ -423,6 +428,8 @@ def _require_api_key():
         or request.path == "/api/health"
         or request.path == "/metrics"
         or request.path.startswith("/static/")
+        or request.path.startswith("/viewport")
+        or request.path.startswith("/api/viewport")
     ):
         return None
     key = _extract_api_key()
@@ -445,7 +452,7 @@ def _count_requests(response):
 
 @app.get("/")
 def index():
-    return render_template("dashboard.html", api_key=DASHBOARD_API_KEY)
+    return render_template("dashboard.html")
 
 
 @app.get("/api/health")
@@ -660,6 +667,257 @@ def agt_obs():
     return jsonify({"observations": data})
 
 
+# --------------------------------------------------------------------------- analytics
+def _parse_window(window: str | None) -> str | None:
+    """Return an ISO-8601 received_at cutoff for lookback windows like 15m, 24h, 7d."""
+    if not window or window == "all":
+        return None
+    match = re.match(r"^(\d+)([mhd])$", window.strip())
+    if not match:
+        return None
+    amount, unit = int(match.group(1)), match.group(2)
+    seconds = {"m": 60, "h": 3600, "d": 86400}[unit]
+    return (datetime.now(timezone.utc) - timedelta(seconds=amount * seconds)).isoformat()
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float | None:
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = pct / 100.0 * (len(sorted_values) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    frac = rank - lo
+    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac
+
+
+@app.get("/api/analytics")
+def analytics():
+    """Observation statistics and time series for the analytics dashboard.
+
+    Computed entirely from the SQLite persistence store, so numbers survive
+    dashboard restarts. Requires the dashboard API key.
+    Query params: window (all | <N>m | <N>h | <N>d), limit (rows scanned).
+    """
+    window = request.args.get("window", "all")
+    limit = min(max(request.args.get("limit", 20000, type=int), 1), 200000)
+    cutoff = _parse_window(window)
+
+    with _state_lock:
+        if _db_conn is None:
+            return jsonify({"error": "persistence unavailable"}), 503
+        if cutoff:
+            rows = _db_conn.execute(
+                "SELECT * FROM observations WHERE received_at >= ? "
+                "ORDER BY id ASC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+            lat_rows = _db_conn.execute(
+                "SELECT duration_seconds FROM tick_latency WHERE recorded_at >= ? "
+                "ORDER BY id ASC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        else:
+            rows = _db_conn.execute(
+                "SELECT * FROM observations ORDER BY id ASC LIMIT ?", (limit,)
+            ).fetchall()
+            lat_rows = _db_conn.execute(
+                "SELECT duration_seconds FROM tick_latency ORDER BY id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+    total = len(rows)
+    registered = sum(1 for r in rows if r["registered"])
+    presence: dict[str, int] = {}
+    health_vals: list[float] = []
+    health_max_vals: list[float] = []
+    dead = 0
+    chat_messages = 0
+    events_total = 0
+    event_types: dict[str, int] = {}
+    ticks: list[int] = []
+    minutes: dict[str, int] = {}
+    health_series: list[dict] = []
+    last_health: dict | None = None
+
+    for i, r in enumerate(rows):
+        obs = json.loads(r["raw"])
+        presence[str(obs.get("presence"))] = (
+            presence.get(str(obs.get("presence")), 0) + 1
+        )
+        health = obs.get("health") or {}
+        last_health = health
+        if isinstance(health, dict):
+            cur = health.get("current")
+            mx = health.get("maximum")
+            if isinstance(cur, (int, float)):
+                health_vals.append(cur)
+            if isinstance(mx, (int, float)):
+                health_max_vals.append(mx)
+            if health.get("is_dead"):
+                dead += 1
+        chat = obs.get("chat") if isinstance(obs.get("chat"), list) else []
+        events = obs.get("events") if isinstance(obs.get("events"), list) else []
+        chat_messages += len(chat)
+        events_total += len(events)
+        for ev in events:
+            if isinstance(ev, dict):
+                t = ev.get("type") or ev.get("event") or "unknown"
+                event_types[str(t)] = event_types.get(str(t), 0) + 1
+        if isinstance(obs.get("tick"), int):
+            ticks.append(obs["tick"])
+        minutes[r["received_at"][:16]] = minutes.get(r["received_at"][:16], 0) + 1
+        if total and (i % max(1, total // 300) == 0 or i == total - 1):
+            if isinstance(health.get("current"), (int, float)):
+                health_series.append(
+                    {
+                        "t": r["received_at"],
+                        "current": health["current"],
+                        "maximum": health.get("maximum"),
+                    }
+                )
+
+    tick_min = min(ticks) if ticks else None
+    tick_max = max(ticks) if ticks else None
+    durations = sorted(r["duration_seconds"] for r in lat_rows)
+    per_minute = [{"t": k, "n": v} for k, v in sorted(minutes.items())]
+    peak_per_minute = max((v for v in minutes.values()), default=0)
+
+    return jsonify(
+        {
+            "window": window,
+            "limit": limit,
+            "observations": {
+                "total": total,
+                "registered": registered,
+                "registered_pct": round(100.0 * registered / total, 2) if total else 0.0,
+                "peak_per_minute": peak_per_minute,
+            },
+            "presence": presence,
+            "health": {
+                "avg_current": round(sum(health_vals) / len(health_vals), 2) if health_vals else None,
+                "avg_maximum": round(sum(health_max_vals) / len(health_max_vals), 2) if health_max_vals else None,
+                "min_current": min(health_vals) if health_vals else None,
+                "dead": dead,
+                "with_health": len(health_vals),
+                "latest": last_health or None,
+            },
+            "activity": {
+                "chat_messages": chat_messages,
+                "events": events_total,
+                "event_types": event_types,
+            },
+            "ticks": {
+                "min": tick_min,
+                "max": tick_max,
+                "span": (tick_max - tick_min) if tick_min is not None and tick_max is not None else None,
+            },
+            "latency": {
+                "min": durations[0] if durations else None,
+                "avg": round(sum(durations) / len(durations), 6) if durations else None,
+                "max": durations[-1] if durations else None,
+                "p50": _percentile(durations, 50),
+                "p95": _percentile(durations, 95),
+                "count": len(durations),
+            },
+            "series": {
+                "per_minute": per_minute,
+                "health": health_series,
+                "latency": [
+                    {
+                        "t": row["recorded_at"],
+                        "avg_ms": round(row["duration_seconds"] * 1000, 3),
+                    }
+                    for row in lat_rows[:: max(1, len(lat_rows) // 300)]
+                ],
+            },
+            "generated_at": now_iso(),
+        }
+    )
+
+
+@app.get("/api/observations/export")
+def export_observations():
+    """Export persisted observations as CSV or JSON.
+
+    Query params: format (csv|json), window (all | <N>m | <N>h | <N>d), limit.
+    """
+    fmt = request.args.get("format", "json").lower()
+    window = request.args.get("window", "all")
+    limit = min(max(request.args.get("limit", 10000, type=int), 1), 200000)
+    cutoff = _parse_window(window)
+
+    with _state_lock:
+        if _db_conn is None:
+            return jsonify({"error": "persistence unavailable"}), 503
+        if cutoff:
+            rows = _db_conn.execute(
+                "SELECT id, received_at, raw FROM observations WHERE received_at >= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        else:
+            rows = _db_conn.execute(
+                "SELECT id, received_at, raw FROM observations ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "id", "tick", "received_at", "registered", "presence",
+                "x", "y", "z", "health_current", "health_maximum", "is_dead",
+                "chat_count", "events_count",
+            ]
+        )
+        for row in rows:
+            obs = json.loads(row["raw"])
+            pos = obs.get("position") or []
+            health = obs.get("health") or {}
+            chat = obs.get("chat") if isinstance(obs.get("chat"), list) else []
+            events = obs.get("events") if isinstance(obs.get("events"), list) else []
+            writer.writerow(
+                [
+                    row["id"],
+                    obs.get("tick"),
+                    row["received_at"],
+                    obs.get("registered"),
+                    obs.get("presence"),
+                    pos[0] if len(pos) > 0 else "",
+                    pos[1] if len(pos) > 1 else "",
+                    pos[2] if len(pos) > 2 else "",
+                    health.get("current") if isinstance(health, dict) else "",
+                    health.get("maximum") if isinstance(health, dict) else "",
+                    health.get("is_dead") if isinstance(health, dict) else "",
+                    len(chat),
+                    len(events),
+                ]
+            )
+        payload = buf.getvalue()
+        return Response(
+            payload,
+            mimetype="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="observations-{stamp}.csv"'
+            },
+        )
+
+    data = [json.loads(row["raw"]) for row in rows]
+    return jsonify(
+        {
+            "format": "json",
+            "count": len(data),
+            "window": window,
+            "exported_at": now_iso(),
+            "observations": data,
+        }
+    )
+
+
 @app.post("/api/server/start")
 def server_start():
     script = REPO_ROOT / "scripts" / "start-server.sh"
@@ -707,6 +965,65 @@ def agent_command():
             message[key] = data[key]
     return jsonify(send_command(message))
 
+# --------------------------------------------------------------------------- live viewport (public — no API key required)
+@app.get("/viewport")
+def viewport():
+    """Dedicated live viewport page: 2D top-down map, telemetry, chat, events."""
+    return render_template("viewport.html")
+
+@app.get("/api/viewport/latest")
+def viewport_latest():
+    """Latest observation for the live viewport (public)."""
+    with _state_lock:
+        last = latest_observation()
+    if not last:
+        return jsonify({"ok": False, "error": "no observations yet"})
+    pos = last.get("position") or [0, 0, 0]
+    health = last.get("health") or {}
+    chat = last.get("chat") or []
+    events = last.get("events") or []
+    return jsonify({
+        "ok": True,
+        "tick": last.get("tick"),
+        "x": float(pos[0]) if len(pos) > 0 else 0.0,
+        "y": float(pos[1]) if len(pos) > 1 else 0.0,
+        "z": float(pos[2]) if len(pos) > 2 else 0.0,
+        "health_current": health.get("current"),
+        "health_maximum": health.get("maximum"),
+        "is_dead": bool(health.get("is_dead")),
+        "registered": bool(last.get("registered")),
+        "presence": last.get("presence"),
+        "chat": chat[-8:] if chat else [],
+        "events": events[-8:] if events else [],
+    })
+
+@app.get("/api/viewport/trail")
+def viewport_trail():
+    """Position trail history for the viewport map (public)."""
+    limit = request.args.get("limit", 300, type=int)
+    with _state_lock:
+        if _db_conn is None:
+            return jsonify({"ok": False, "error": "persistence unavailable"})
+        rows = _db_conn.execute(
+            "SELECT tick, position FROM observations "
+            "WHERE position IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    trail = []
+    for row in reversed(rows):
+        try:
+            pos = json.loads(row["position"])
+            if isinstance(pos, list) and len(pos) >= 2:
+                trail.append({
+                    "tick": row["tick"],
+                    "x": float(pos[0]),
+                    "y": float(pos[1]),
+                    "z": float(pos[2]) if len(pos) > 2 else 0.0,
+                })
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return jsonify({"ok": True, "trail": trail})
+
 
 # --------------------------------------------------------------------------- graceful shutdown
 _shutdown = threading.Event()
@@ -748,8 +1065,11 @@ if __name__ == "__main__":
     print(f"Veloren Agent Dashboard v{DASHBOARD_VERSION}")
     print(f"  Listening on http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
     print(
-        f"  API key: {DASHBOARD_API_KEY}  "
-        f"(set DASHBOARD_API_KEY to override; required on all API endpoints except GET /, GET /api/health and GET /metrics)"
+        "  API key: "
+        + ("DASHBOARD_API_KEY set in environment"
+           if os.environ.get("DASHBOARD_API_KEY")
+           else "auto-generated at startup (never logged)")
+        + "; required on all API endpoints except GET /, GET /api/health and GET /metrics"
     )
     print(f"  Persistence: {DB_PATH}")
     _serve(DASHBOARD_HOST, DASHBOARD_PORT)

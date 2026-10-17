@@ -8,6 +8,7 @@ FROM rust:1.99 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    mold \
     pkg-config \
     libssl-dev \
     libxcb-render0-dev \

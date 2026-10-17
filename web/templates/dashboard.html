@@ -24,6 +24,7 @@
     <a class="tab" href="#server-logs">Server Logs</a>
     <a class="tab" href="#agent-logs">Agent Logs</a>
     <a class="tab" href="#performance">Performance</a>
+    <a class="tab" href="/viewport">Viewport</a>
   </nav>
 
   <main class="wrap">
@@ -156,6 +157,64 @@
         <svg id="perf-sparkline" class="sparkline" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="tick-latency history"></svg>
         <div class="sparkline-labels" id="perf-sparkline-labels">min: — · avg: — · max: —</div>
       </div>
+
+      <!-- Analytics -->
+      <div class="card" style="grid-column: 1 / -1">
+        <h2>Observation analytics <span class="muted">(computed from SQLite persistence)</span></h2>
+        <div class="grid grid-4">
+          <div class="card metric-card">
+            <h3>Total observations</h3>
+            <p class="big" id="an-total">—</p>
+            <p class="meta">persisted rows</p>
+          </div>
+          <div class="card metric-card">
+            <h3>Registered</h3>
+            <p class="big" id="an-registered">—%</p>
+            <p class="meta">share of observations</p>
+          </div>
+          <div class="card metric-card">
+            <h3>Health</h3>
+            <p class="big" id="an-health">— / —</p>
+            <p class="meta">current / maximum (avg)</p>
+          </div>
+          <div class="card metric-card">
+            <h3>Peak observations/min</h3>
+            <p class="big" id="an-peak">—</p>
+            <p class="meta">busiest minute in window</p>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="btn-export-csv">Export CSV</button>
+          <button class="btn" id="btn-export-json">Export JSON</button>
+          <select id="an-window">
+            <option value="all">All time</option>
+            <option value="60m">Last hour</option>
+            <option value="24h">Last 24h</option>
+          </select>
+          <div id="msg-export" class="msg"></div>
+        </div>
+        <div class="grid grid-2">
+          <div class="card" style="grid-column: 1 / -1; min-height: 240px">
+            <h3>Observations per minute</h3>
+            <svg id="an-line" class="chart" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="observations per minute over time"></svg>
+            <div class="sparkline-labels" id="an-line-labels">—</div>
+          </div>
+          <div class="card" style="grid-column: 1 / -1; min-height: 240px">
+            <h3>Health trend — current / maximum</h3>
+            <svg id="an-health-trend" class="chart" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="health current vs maximum over time"></svg>
+          </div>
+        </div>
+        <div class="grid grid-2">
+          <div class="card" style="min-height: 240px">
+            <h3>Tick latency distribution</h3>
+            <svg id="an-latency-hist" class="chart" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="tick-latency histogram"></svg>
+          </div>
+          <div class="card" style="min-height: 240px">
+            <h3>Presence breakdown</h3>
+            <svg id="an-presence" class="chart" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" role="img" aria-label="presence value breakdown"></svg>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -164,7 +223,6 @@
   </footer>
 </div>
 
-<script>window.DASHBOARD_API_KEY = {{ api_key|tojson }};</script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

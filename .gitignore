@@ -25,6 +25,11 @@ Thumbs.db
 # Environment variables (never commit real credentials)
 .env
 
+# Runtime logs / artifacts (may contain session data; never commit)
+web/agent.log
+web/__pycache__/
+__pycache__/
+
 # Hermes agent runtime
 .hermes/logs/
 .hermes/artifacts/
