@@ -24,7 +24,7 @@ jobs:
       - name: Cache cargo registry and git checkouts
         uses: actions/cache@v4
         with:
-          path: ~/.cargo
+          path: .cargo
           key: cargo-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-nightly-
       - name: Cargo build target cache
@@ -34,38 +34,46 @@ jobs:
           key: cargo-build-${{ runner.os }}-nightly-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-build-${{ runner.os }}-nightly-
       - name: Fetch dependencies
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: cargo fetch
       - name: Patch transitive deps for modern toolchains
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: |
           set -euo pipefail
-          # veloren-weekly's transitive deps (shred, veloren-common) use APIs
-          # removed from modern Rust; apply the project's toolchain-compatibility
-          # patches (patches/veloren-weekly-toolchain.patch, see docs/troubleshooting.md).
-          # Locate the veloren git checkout dynamically after `cargo fetch`: the
-          # weekly tag's rev is not fixed and multiple checkouts may coexist, so
-          # hardcoding ~/.cargo/git/checkouts/veloren-*/<rev> is fragile — that
-          # hardcoded path is exactly why the nightly job fails in CI.
-          VELOREN_SRC="$(find ~/.cargo/git/checkouts -maxdepth 8 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)"
+          # Apply the repo-committed toolchain-compatibility patch to the veloren
+          # weekly git checkout fetched into the workspace CARGO_HOME after
+          # `cargo fetch`. Everything lives inside the repo workspace — no
+          # ~/.cargo/git/checkout path dependence (that hardcoded lookup was
+          # exactly why the nightly job was fragile).
+          VELOREN_SRC="$(find "$CARGO_HOME/git/checkouts" -maxdepth 8 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)"
           if [ -z "$VELOREN_SRC" ]; then
             echo "::error::veloren weekly checkout not found after cargo fetch" >&2
             exit 1
           fi
           VELOREN_ROOT="$(cd "$(dirname "$VELOREN_SRC")/../../.." && pwd)"
           (cd "$VELOREN_ROOT" && git apply "$GITHUB_WORKSPACE/patches/veloren-weekly-toolchain.patch")
-          SHRED_META="$(find ~/.cargo/registry/src -type f -path '*/shred-0.15.0/src/meta.rs' -print -quit)"
+          # Registry-crate half (docs/troubleshooting.md workaround 2):
+          # shred-0.15.0 removed core::ptr::invalid_mut on modern toolchains.
+          SHRED_META="$(find "$CARGO_HOME/registry/src" -type f -path '*/shred-0.15.0/src/meta.rs' -print -quit)"
           if [ -z "$SHRED_META" ]; then
             echo "::error::shred-0.15.0/src/meta.rs not found in cargo registry" >&2
             exit 1
           fi
-          sed -i 's|let invalid_ptr = core::ptr::invalid_mut::<R>((self as \*mut Self).addr());|let invalid_ptr = (self as *mut Self).wrapping_add(1).cast::<R>();|' "$SHRED_META"
+          sed -i 's|core::ptr::invalid_mut::<R>((self as \*mut Self).addr())|(self as *mut Self).wrapping_add(1).cast::<R>()|' "$SHRED_META"
           # Gate: fail the job if the shred patch did not apply (e.g. upstream source changed)
           if grep -q 'core::ptr::invalid_mut' "$SHRED_META"; then
             echo "::error::shred-0.15.0 toolchain patch did not apply: invalid_mut still present" >&2
             exit 1
           fi
       - name: Build with zero warnings (nightly)
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: RUSTFLAGS="-D warnings" cargo +nightly build --release
       - name: Run test suite (nightly)
+        env:
+          CARGO_HOME: ${{ github.workspace }}/.cargo
         run: RUSTFLAGS="-D warnings" cargo +nightly test --release
 
   docker-sandbox:
