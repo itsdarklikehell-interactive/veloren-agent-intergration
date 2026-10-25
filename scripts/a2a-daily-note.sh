@@ -17,7 +17,7 @@ set -euo pipefail
 
 VAULT="${OBSIDIAN_VAULT_PATH:-/home/hans/Documents/Obsidian Vault}"
 NOTES_DIR="$VAULT/Dagelijks"
-A2A_BRIDGE="./scripts/openclaw-to-a2a-bridge.sh"
+A2A_BRIDGE="$(cd "$(dirname "$0")" && pwd)/openclaw-to-a2a-bridge.sh"
 TODAY=$(date +%Y-%m-%d)
 DATE="${1:-$TODAY}"
 
