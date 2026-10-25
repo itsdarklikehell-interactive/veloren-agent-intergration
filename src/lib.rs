@@ -27,6 +27,13 @@ use vek::{Vec2, Vec3};
 mod behavior;
 use crate::behavior::{BehaviorInputs, BehaviorSystem, NEARBY_ENTITY_RADIUS};
 
+// --- A2A imports (used by the WebSocket server) ---
+use specs::World;
+use specs::systems::SystemData;
+use specs::storage::ResourceId;
+use veloren_common::comp::character_state::event_emitters::shred;
+use veloren_common::comp::character_state::events::EventBus;
+
 /// Observation schema version, emitted as `schema_version` in every JSON observation.
 pub const SCHEMA_VERSION: u32 = 1;
 

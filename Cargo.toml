@@ -1,7 +1,7 @@
 [package]
 name = "veloren-agent"
 version = "1.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 # Veloren client library — same modular frontend lib teloren uses
@@ -23,13 +23,14 @@ serde_json = "1"
 vek = { version = "0.17", features = ["serde"] }
 
 # Specs ECS (used by veloren-common for component access)
-specs = { version = "0.20" }
-shred = "0.15"
+specs = { version = "0.20", features = ["derive", "shred-derive", "parallel"] }
+shred = "0.14"
 
-[profile.dev]
-opt-level = 2
-overflow-checks = false
+# Agent-to-Agent (HTTP/WSS) protocol
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tungstenite = "0.21"
+hashbrown = "0.14"
 
-[[bin]]
-name = "veloren-agent"
-path = "src/main.rs"
+[patch.crates-io]
+foldhash = { path = ".vendor/foldhash" }
+

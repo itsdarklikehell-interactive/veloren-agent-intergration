@@ -33,7 +33,8 @@ use std::{
     env,
     io::{self, BufRead},
     path::PathBuf,
-    sync::Arc,
+    sync::mpsc::{self, sync_channel, SyncSender},
+    thread,
     time::Duration,
 };
 use tokio::runtime::Runtime;
@@ -42,6 +43,7 @@ use veloren_agent::{
     DEFAULT_HEARTBEAT_TIMEOUT_SEC, SimpleCredentialProvider, ensure_character, run_agent,
 };
 use veloren_client::addr::ConnectionArgs;
+use a2a::Observation;
 
 const DEFAULT_SERVER: &str = "127.0.0.1:14004";
 const DEFAULT_CHARACTER: &str = "hermes";

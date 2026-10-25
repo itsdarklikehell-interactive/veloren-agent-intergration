@@ -33,3 +33,8 @@ __pycache__/
 # Hermes agent runtime
 .hermes/logs/
 .hermes/artifacts/
+
+# Vendored / third-party
+.vendor/
+foldhash-0.2.0/
+
