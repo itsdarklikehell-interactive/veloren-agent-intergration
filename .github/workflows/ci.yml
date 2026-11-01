@@ -36,49 +36,55 @@ jobs:
       - name: Fetch dependencies
         env:
           CARGO_HOME: ${{ github.workspace }}/.cargo
-        run: cargo fetch
+        run: |
+          set -euo pipefail
+          cargo fetch
       - name: Patch transitive deps for modern toolchains
         env:
           CARGO_HOME: ${{ github.workspace }}/.cargo
         run: |
           set -euo pipefail
-          # Apply the repo-committed toolchain-compatibility patch to the veloren
-          # weekly git checkout fetched into the workspace CARGO_HOME after
-          # `cargo fetch`. Everything lives inside the repo workspace — no
-          # ~/.cargo/git/checkout path dependence (that hardcoded lookup was
-          # exactly why the nightly job was fragile).
-          VELOREN_SRC="$(find "$CARGO_HOME/git/checkouts" -maxdepth 8 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)"
+          # Find veloren weekly checkout
+          VELOREN_SRC=$(find "$CARGO_HOME/git/checkouts" -maxdepth 10 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)
           if [ -z "$VELOREN_SRC" ]; then
-            echo "::error::veloren weekly checkout not found after cargo fetch" >&2
+            echo "ERROR: veloren weekly checkout not found after cargo fetch" >&2
+            echo "Looking in: $CARGO_HOME/git/checkouts" >&2
+            find "$CARGO_HOME/git/checkouts" -maxdepth 10 -type d 2>/dev/null | head -20 >&2
             exit 1
           fi
-          VELOREN_ROOT="$(cd "$(dirname "$VELOREN_SRC")/../../.." && pwd)"
-          # Idempotent apply: with a warm Actions cache the checkout may already
-          # be patched from a previous run, in which case a plain `git apply`
-          # fails ("patch does not apply"). Try the forward apply; skip if the
-          # patch is already in place; fail only if neither direction applies
-          # (genuine conflict or upstream source drift).
+          VELOREN_ROOT=$(cd "$(dirname "$VELOREN_SRC")/../../.." && pwd)
+          echo "Applying patch to: $VELOREN_ROOT"
           PATCH="$GITHUB_WORKSPACE/patches/veloren-weekly-toolchain.patch"
-          if (cd "$VELOREN_ROOT" && git apply --check "$PATCH"); then
+          if [ ! -f "$PATCH" ]; then
+            echo "ERROR: patch file not found: $PATCH" >&2
+            exit 1
+          fi
+          # Idempotent apply
+          if (cd "$VELOREN_ROOT" && git apply --check "$PATCH" 2>/dev/null); then
             (cd "$VELOREN_ROOT" && git apply "$PATCH")
-          elif (cd "$VELOREN_ROOT" && git apply --reverse --check "$PATCH"); then
-            echo "veloren-weekly toolchain patch already applied — skipping"
+          elif (cd "$VELOREN_ROOT" && git apply --reverse --check "$PATCH" 2>/dev/null); then
+            echo "Patch already applied - skipping"
           else
-            echo "::error::veloren-weekly toolchain patch does not apply cleanly" >&2
+            echo "ERROR: veloren-weekly toolchain patch does not apply cleanly" >&2
             exit 1
           fi
-          # Registry-crate half (docs/troubleshooting.md workaround 2):
-          # shred-0.15.0 removed core::ptr::invalid_mut on modern toolchains.
-          SHRED_META="$(find "$CARGO_HOME/registry/src" -type f -path '*/shred-0.15.0/src/meta.rs' -print -quit)"
+          # Patch shred crate
+          SHRED_META=$(find "$CARGO_HOME/registry/src" -maxdepth 12 -type f -path '*/shred-0.15.0/src/meta.rs' -print -quit)
           if [ -z "$SHRED_META" ]; then
-            echo "::error::shred-0.15.0/src/meta.rs not found in cargo registry" >&2
+            echo "ERROR: shred-0.15.0/src/meta.rs not found" >&2
+            find "$CARGO_HOME/registry/src" -maxdepth 12 -type f -name "meta.rs" 2>/dev/null | head -10 >&2
             exit 1
           fi
-          sed -i 's|core::ptr::invalid_mut::<R>((self as \*mut Self).addr())|(self as *mut Self).wrapping_add(1).cast::<R>()|' "$SHRED_META"
-          # Gate: fail the job if the shred patch did not apply (e.g. upstream source changed)
+          # Replace invalid_mut with wrapping_add workaround
           if grep -q 'core::ptr::invalid_mut' "$SHRED_META"; then
-            echo "::error::shred-0.15.0 toolchain patch did not apply: invalid_mut still present" >&2
-            exit 1
+            sed -i 's|core::ptr::invalid_mut::<R>((self as \*mut Self).addr())|((self as *mut Self).wrapping_add(1).cast::<R>())|' "$SHRED_META"
+            if grep -q 'core::ptr::invalid_mut' "$SHRED_META"; then
+              echo "ERROR: shred patch did not apply" >&2
+              exit 1
+            fi
+            echo "Patched shred crate successfully"
+          else
+            echo "shred crate already patched or pattern not found"
           fi
       - name: Build with zero warnings (nightly)
         env:
