@@ -30,7 +30,7 @@ COPY . .
 # shred-0.15 removes core::ptr::invalid_mut; the sed below replaces the call site. It matches loosely
 # because the exact line's whitespace/type-args differ across registry revisions, and an unmatched sed
 # exits 0 silently, so we grep afterwards to fail the build if the patch did not apply.
-RUN cargo fetch \
+RUN cargo +nightly fetch \
   && VELOREN_SRC="$(find /usr/local/cargo/git/checkouts -maxdepth 8 -type f -path '*/common/base/src/userdata_dir.rs' -print -quit)" \
   && if [ -z "$VELOREN_SRC" ]; then echo "veloren weekly checkout not found after cargo fetch" >&2; exit 1; fi \
   && VELOREN_ROOT="$(cd "$(dirname "$VELOREN_SRC")/../../.." && pwd)" \
